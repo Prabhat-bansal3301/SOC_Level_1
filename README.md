@@ -1,43 +1,89 @@
-# SOC Level 1 Learning Notes
+# SOC Level 1 Learning Repository
 
-This repository contains structured notes for SOC Level 1 fundamentals, focused on the **Junior Security Analyst Intro** track.
+This repository contains structured SOC Level 1 notes across multiple blue-team learning tracks.
 
-## Repository Purpose
+## What’s Inside
 
-The goal of this repo is to:
-- Organize SOC Level 1 study material in one place
-- Break down key defensive security concepts in simple language
-- Build a reusable reference for interview prep and practical SOC work
+### 1) Junior Security Analyst Intro
+Foundational SOC concepts for new analysts:
+- SOC team structure and L1 role
+- SOC placement inside blue-team operations
+- Human and system attack vectors
 
-## Contents
+Files:
+- `01_Team_Structure.md`
+- `02_SOC Role in Blue Team.md`
+- `03_Humans as Attack Vectors.md`
+- `03_Systems as Attack Vectors.md`
 
-### `Junior Security Analyst Intro`
+### 2) Core SOC Solutions
+Core SOC technologies and operational tooling:
+- EDR fundamentals and response workflow
+- Splunk SIEM basics and search examples
+- Elastic Stack (ELK), KQL, and dashboards
+- SOAR concepts and playbook usage
 
-1. **01_Team_Structure.md**  
-   Covers SOC team roles, blue team structure, career paths, and internal SOC vs MSSP comparisons.
+Files:
+- `01_Introduction_to_EDR.md`
+- `02_Splunk:The_Basics.md`
+- `03_Elastic_Stack:The_Basics.md`
+- `04_Introduction_to_SOAR.md`
 
-2. **02_SOC Role in Blue Team.md**  
-   Explains security hierarchy, blue team departments, and where SOC operations fit in enterprise security.
+### 3) Cyber Defense Framework
+Threat modeling and detection frameworks used in SOC work:
+- Pyramid of Pain
+- Cyber Kill Chain and Unified Kill Chain
+- MITRE ATT&CK and related MITRE resources
+- Practical detection labs and Snort notes
 
-3. **03_Humans as Attack Vectors.md**  
-   Focuses on social engineering attacks, common human-targeted attack types, and mitigation/detection strategy.
+Files:
+- `01_Pyramid_Of_Pain.md`
+- `02_Cyber_Kill_Chain.md`
+- `03_Unified_Kill_Chain.md`
+- `04_MITRE.md`
+- `05_Summit_Practical.md`
+- `06_Eviction.md`
+- `Snort.md`
 
-4. **03_Systems as Attack Vectors.md**  
-   Focuses on system-targeted attacks, vulnerabilities/CVEs, misconfigurations, and layered defense principles.
+### 4) Phishing Analysis
+Email and phishing investigation workflow:
+- Email fundamentals and artifact analysis
+- Real phishing examples
+- Investigation tools and workflow
+- SPF, DKIM, DMARC, S/MIME, and prevention layers
 
-## How to Use This Repo
+Files:
+- `01_Fundamentals.md`
+- `02_Emails_in_Action.md`
+- `03_Tools.md`
+- `04_Phishing_Prevention.md`
 
-- Read files in order for a progressive learning path
-- Use each document as a quick reference during labs or SOC practice
-- Revisit tables and attack/defense flow sections to reinforce core concepts
+### 5) Team Internals
+L1 SOC process and operations:
+- Alert triage workflow
+- Alert reporting and escalation
+- SOC metrics and objectives
+- Workbooks, identity/asset inventory, and network context
 
-## Who This Is For
+Files:
+- `SOC_L1_Alert_Triage.md`
+- `SOC_L1_Alert_Reporting.md`
+- `Metrics_&_Objectives.md`
+- `WorkBook_ &_Lookup.md`
 
-- Beginners starting in SOC/Blue Team
-- Junior analysts building practical security understanding
-- Learners preparing for SOC Level 1-style training and interviews
+## How to Use
 
-## Notes
+- Read each folder in numeric order.
+- Use notes as a quick SOC reference during labs and investigations.
+- Revisit framework and triage sections for interview preparation.
 
-- This repository is documentation-focused (Markdown learning notes).
-- No build or runtime setup is required.
+## Audience
+
+- SOC/Blue Team beginners
+- Junior SOC analysts
+- Learners preparing for SOC Level 1 training paths
+
+## Repo Notes
+
+- Documentation-only repository (Markdown notes).
+- No build, install, or runtime setup required.
