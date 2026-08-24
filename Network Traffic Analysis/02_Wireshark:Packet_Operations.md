@@ -1,4 +1,4 @@
-<img width="1082" height="465" alt="capture filter" src="https://github.com/user-attachments/assets/41b95815-c95e-4e9d-8275-7afa8f60749e" />## Wireshark — Statistics Menu
+## Wireshark — Statistics Menu
 
 ### Overview
 Statistics menu = big picture view of PCAP.
