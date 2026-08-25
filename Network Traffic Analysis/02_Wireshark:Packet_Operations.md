@@ -411,3 +411,152 @@ tcp.flags.syn == 1 && tcp.flags.ack == 0
 | `http.response.code == 200` | Successful HTTP |
 | `dns.flags.response == 0` | DNS queries |
 | `dns.qry.type == 16` | TXT records (C2 check) |
+
+---
+
+## Wireshark — Advanced Filtering
+
+### Advanced Operators & Functions
+
+#### `contains` — Case-sensitive substring search
+
+<img width="1064" height="715" alt="Filter (contain)" src="https://github.com/user-attachments/assets/814c16da-f206-4e1a-bd03-28db9aa23dd1" />
+
+```wireshark
+http.server contains "Apache"
+http.user_agent contains "curl"
+dns.qry.name contains "evil"
+```
+
+#### `matches` — Regex pattern search (case-insensitive)
+
+<img width="1074" height="718" alt="Filter (matches)" src="https://github.com/user-attachments/assets/6d5374f2-0a09-4e51-aed6-94aebdd40c7d" />
+
+```wireshark
+http.host matches "\.(php|html)"
+http.request.uri matches "\.(exe|zip|rar)$"
+dns.qry.name matches "^[a-z0-9]{20,}\."     # DGA detection
+```
+
+#### `in` — Set membership (value in range/list)
+
+<img width="1123" height="752" alt="Filter (in)" src="https://github.com/user-attachments/assets/832c5fe3-e6b8-4070-a2e1-2faca1e922ea" />
+
+```wireshark
+tcp.port in {80 443 8080}
+http.response.code in {200 301 302}
+ip.src in {10.10.10.1 10.10.10.2 10.10.10.3}
+```
+
+#### `upper` — Convert to uppercase before matching
+
+<img width="1142" height="768" alt="Filter (upper)" src="https://github.com/user-attachments/assets/5b6dc33f-66b6-4e72-8216-4ef76cf82c20" />
+
+```wireshark
+upper(http.server) contains "APACHE"
+upper(http.user_agent) contains "CURL"
+```
+
+#### `lower` — Convert to lowercase before matching
+
+<img width="1160" height="776" alt="Filter (lower)" src="https://github.com/user-attachments/assets/75166a28-1725-4994-bdbd-63b90a84cc71" />
+
+```wireshark
+lower(http.server) contains "apache"
+lower(http.host) contains "malicious"
+```
+
+#### `string` — Convert non-string field to string
+
+<img width="1160" height="775" alt="Filter (string)" src="https://github.com/user-attachments/assets/02c556c1-8fed-4c5d-a67f-e437366bd306" />
+
+```wireshark
+# Find frames ending with odd numbers
+string(frame.number) matches "[13579]$"
+
+# Find frames with specific TTL values
+string(ip.ttl) matches "^12"
+```
+
+---
+
+### Operator Quick Reference
+
+| Filter | Type | Case Sensitive | Use |
+|--------|------|---------------|-----|
+| `contains` | Comparison | Yes | Exact substring search |
+| `matches` | Comparison | No | Regex pattern search |
+| `in` | Set membership | — | Value within a list/range |
+| `upper()` | Function | — | Normalize to uppercase |
+| `lower()` | Function | — | Normalize to lowercase |
+| `string()` | Function | — | Convert field to string |
+
+---
+
+### Practical Investigation Filters
+
+```wireshark
+# Find executable downloads
+http.request.uri matches "\.(exe|dll|bat|ps1)$"
+
+# Find suspicious DNS (long subdomains = possible DGA/tunneling)
+dns.qry.name matches "^[a-z0-9]{15,}\."
+
+# Find data exfiltration via POST to external IPs
+http.request.method == "POST" && !(ip.dst == 192.168.0.0/16)
+
+# Find specific server type
+lower(http.server) contains "apache"
+
+# Multi-port web traffic
+tcp.port in {80 443 8080 8443}
+
+# Find PHP or HTML pages accessed
+http.host matches "\.(php|html)"
+```
+
+---
+
+### Bookmarks & Filter Buttons
+
+**Save a filter as bookmark:**
+
+<img width="958" height="759" alt="bookmark" src="https://github.com/user-attachments/assets/c6ac4602-535b-4cb6-8c5a-efc32ccd7e4b" />
+
+```
+Type filter in toolbar → click bookmark icon → Save
+→ Reuse from bookmark dropdown
+```
+
+**Create a filter button:**
+
+<img width="1233" height="851" alt="add display filter button" src="https://github.com/user-attachments/assets/621f23f7-da08-4d60-80d4-3c6b1252c2b4" />
+
+```
+Type filter → click + icon → name the button
+→ Appears as one-click button in toolbar
+```
+
+Use for: complex filters you run repeatedly during investigations.
+
+---
+
+### Profiles
+
+<img width="877" height="638" alt="configuration profiles" src="https://github.com/user-attachments/assets/429e855a-3e98-4356-8bc1-f1eb05b6d044" />
+
+`Edit → Configuration Profiles`
+or
+`Status bar (bottom right) → Profile`
+
+Create different profiles for different investigation types:
+
+| Profile | Contains |
+|---------|---------|
+| Malware Analysis | Malware-specific color rules + filters |
+| Network Recon | Port scan detection filters |
+| Phishing | DNS/HTTP suspicious traffic filters |
+| Default | Standard configuration |
+
+> Switch profiles instantly without reconfiguring everything.
+> Each profile saves: coloring rules, filter buttons, bookmarks, preferences.
