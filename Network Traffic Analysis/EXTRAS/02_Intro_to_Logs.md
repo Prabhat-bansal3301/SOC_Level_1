@@ -413,3 +413,104 @@ Tampered log = different hash = integrity violation
 
 > Log integrity = essential for forensic evidence and compliance.
 > Hashing ensures logs haven't been modified after collection.
+
+---
+
+## Log Analysis — Process & Tools
+
+### Log Analysis Pipeline
+
+| Stage | What it does |
+|-------|-------------|
+| **Parsing** | Break raw logs into manageable components — extract fields |
+| **Normalisation** | Standardize different log formats into consistent structure |
+| **Sorting** | Order by time, source, severity, event type — find patterns |
+| **Classification** | Categorize by severity, type, source — filter what matters |
+| **Enrichment** | Add context: geo-IP, user details, threat intel, related data |
+| **Correlation** | Link related events across sources — detect attack patterns |
+| **Visualisation** | Charts, graphs, heat maps — make patterns visible |
+| **Reporting** | Summarize for stakeholders — compliance, management, auditors |
+
+---
+
+### Log Analysis Tools
+
+| Scenario | Tools |
+|----------|-------|
+| **Complex analysis / SIEM** | Splunk, Elastic Stack (ELK) |
+| **Linux CLI (quick/IR)** | `cat` `grep` `sed` `sort` `uniq` `awk` `sha256sum` |
+| **Windows CLI** | EZ-Tools, `Get-FileHash` |
+| **Log viewing** | Open-source Log Viewer |
+
+---
+
+### Linux CLI Log Analysis Commands
+
+```bash
+# View raw log
+cat /var/log/auth.log
+
+# Search for specific IP
+grep "34.253.159.159" /var/log/nginx/access.log
+
+# Normalize nginx log + redirect to temp file
+awk -F'[][]' '{print "[" $2 "]", "--- nginx/access.log ---", "\"" $0 "\""}' \
+    /var/log/gitlab/nginx/access.log | sed "s/ +0000//g" > /tmp/parsed_consolidated.log
+
+# Filter specific entries from consolidated log
+grep "34.253.159.159" /tmp/parsed_consolidated.log > /tmp/filtered_consolidated.log
+
+# Sort all entries by date/time
+sort /tmp/parsed_consolidated.log > /tmp/sort_parsed_consolidated.log
+
+# Remove duplicate entries
+uniq /tmp/sort_parsed_consolidated.log > /tmp/uniq_sort_parsed_consolidated.log
+
+# Generate hash for integrity verification
+sha256sum /var/log/auth.log
+```
+
+---
+
+### Log Analysis Techniques
+
+| Technique | Purpose |
+|-----------|---------|
+| **Pattern Recognition** | Identify recurring sequences — normal vs abnormal |
+| **Anomaly Detection** | Spot deviations from baseline — early threat warning |
+| **Correlation Analysis** | Link events across sources — root cause analysis |
+| **Timeline Analysis** | Trends over time — performance + attack reconstruction |
+| **Machine Learning/AI** | Automate classification, enrichment, predictive insights |
+| **Visualisation** | Graphs/charts — make complex data intuitive |
+| **Statistical Analysis** | Quantitative insights — regression, hypothesis testing |
+
+---
+
+### Log Integrity — Acquisition Best Practice
+
+```bash
+# Always hash log files during collection
+sha256sum /var/log/auth.log > auth.log.sha256
+
+# Verify integrity later
+sha256sum -c auth.log.sha256
+```
+
+> Hashing ensures logs are admissible as forensic evidence in court.
+> Changed hash = tampered evidence = inadmissible.
+
+---
+
+### Key Takeaway
+```
+Logs → parse → normalize → correlate → visualize → act
+                                              ↓
+                                     Incident response
+                                     Threat hunting
+                                     Compliance reporting
+                                     Performance monitoring
+```
+
+> Logging without analysis = wasted storage.
+> Analysis without integrity verification = unreliable evidence.
+> Both together = strong security posture.
