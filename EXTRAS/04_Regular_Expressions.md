@@ -192,3 +192,83 @@ cat\.xyz  matches: cat.xyz ONLY
 [Ff]ile\d{1,2}  → File or file + 1-2 digit number
 \.?\w+          → optional dot + one or more word characters
 ```
+
+---
+
+## Regex — Anchors & Groups
+
+### Anchors
+
+| Symbol | Meaning | Example |
+|--------|---------|---------|
+| `^` | Starts with | `^abc` → line starting with abc |
+| `$` | Ends with | `xyz$` → line ending with xyz |
+
+```regex
+^abc        matches: "abcdef" but NOT "xyzabc"
+xyz$        matches: "abcxyz" but NOT "xyzabc"
+^abc$       matches: ONLY the exact string "abc"
+^[A-Z]      matches: any line starting with capital letter
+\d$         matches: any line ending with a digit
+```
+
+> **Note:** `^` inside `[ ]` = exclusion (NOT these chars)
+> `^` outside `[ ]` = anchor (starts with)
+
+---
+
+### Groups with `( )`
+
+Enclose patterns in parentheses to group them.
+
+**Either/Or with `|` pipe:**
+```regex
+during the (day|night)   matches: "during the day"
+                                  "during the night"
+
+(cat|dog)s               matches: cats, dogs
+(jpg|png|gif)$           matches: lines ending with jpg, png, or gif
+```
+
+**Repetition with groups:**
+```regex
+(no){5}      matches: nonononono
+(ab){3}      matches: ababab
+(ha){2,4}    matches: haha, hahaha, hahahaha
+```
+
+---
+
+### Combined Examples
+
+```regex
+^(cat|dog)        line starts with cat or dog
+(error|warning)$  line ends with error or warning
+^(192\.168\.)     line starts with 192.168.
+(\d{1,3}\.){3}    matches 3 groups of 1-3 digits + dot (IP pattern)
+```
+
+---
+
+### Full Quick Reference
+
+| Symbol | Meaning |
+|--------|---------|
+| `.` | Any character (not newline) |
+| `?` | Previous char optional (0 or 1) |
+| `*` | 0 or more |
+| `+` | 1 or more |
+| `{n}` | Exactly n times |
+| `{n,m}` | n to m times |
+| `^` | Start of line |
+| `$` | End of line |
+| `[abc]` | Charset — any of these chars |
+| `[^abc]` | Exclude these chars |
+| `(a\|b)` | Either a or b |
+| `\d` | Digit |
+| `\D` | Non-digit |
+| `\w` | Alphanumeric + underscore |
+| `\W` | Non-alphanumeric |
+| `\s` | Whitespace |
+| `\S` | Non-whitespace |
+| `\.` | Literal dot |
