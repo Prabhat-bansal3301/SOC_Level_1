@@ -527,3 +527,145 @@ tail -f apache.log | grep "404"
 # Count total log entries
 wc -l apache.log
 ```
+
+---
+
+## Regex for Log Analysis
+
+### Using Regex with grep
+
+Add `-E` flag to enable regex pattern matching:
+
+```bash
+# Match blog posts with ID 10-19
+grep -E 'post=1[0-9]' apache-ex2.log
+
+# Match any IPv4 address
+grep -E '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' apache.log
+
+# Match HTTP errors (4xx or 5xx)
+grep -E '" [45][0-9]{2} ' apache.log
+
+# Match specific user agents (scanners)
+grep -E '(Nmap|Hydra|sqlmap|nikto)' apache.log
+
+# Match SQL injection patterns
+grep -E "(UNION|SELECT|DROP|INSERT|UPDATE|'|--)" apache.log
+
+# Match XSS patterns
+grep -E '(<script|onerror=|onclick=|alert\()' apache.log
+
+# Match directory traversal
+grep -E '(\.\./|%2e%2e%2f)' apache.log
+```
+
+---
+
+### Building Regex Patterns for Log Parsing
+
+**Sample log entry:**
+```
+126.47.40.189 - - [28/Jul/2023:15:30:45 +0000] "GET /admin.php HTTP/1.1" 200 1275 "" "Mozilla/5.0..."
+```
+
+**Fields to extract:**
+
+| Field | Regex Pattern | Explanation |
+|-------|--------------|-------------|
+| **IP Address** | `\b([0-9]{1,3}\.){3}[0-9]{1,3}\b` | 4 octets separated by dots |
+| **Timestamp** | `\[(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2})` | Date/time in brackets |
+| **HTTP Method** | `"(GET\|POST\|PUT\|DELETE)` | HTTP verb in quotes |
+| **URL** | `"(?:GET\|POST\|PUT) (\S+)` | Path after HTTP method |
+| **Status Code** | `" ([0-9]{3}) ` | 3-digit code after closing quote |
+| **User-Agent** | `"([^"]+)"$` | Last quoted string |
+
+---
+
+### IP Address Regex — Breakdown
+
+```
+\b([0-9]{1,3}\.){3}[0-9]{1,3}\b
+```
+
+| Part | Meaning |
+|------|---------|
+| `\b` | Word boundary — match complete IP, not partial |
+| `[0-9]{1,3}` | 1-3 digits (one octet) |
+| `\.` | Literal dot (escaped) |
+| `{3}` | Repeat octet+dot group 3 times |
+| `[0-9]{1,3}` | Final octet (no trailing dot) |
+| `\b` | Word boundary at end |
+
+---
+
+### Logstash + Grok — Custom Field Extraction
+
+Grok syntax: `%{SYNTAX:SEMANTIC}` or custom regex with named capture groups.
+
+**logstash.conf:**
+```yaml
+input {
+  ...
+}
+
+filter {
+  grok {
+    match => {
+      "message" => "(?<ipv4_address>\b([0-9]{1,3}\.){3}[0-9]{1,3}\b)"
+    }
+  }
+}
+
+output {
+  ...
+}
+```
+
+**What this does:**
+- Matches incoming log `message` field
+- Extracts IPv4 address using regex
+- Stores extracted value in custom field: `ipv4_address`
+- Field is then searchable and visualizable in Kibana/Elasticsearch
+
+---
+
+### Useful Tools
+
+| Tool | Link | Use |
+|------|------|-----|
+| RegExr | [regexr.com](https://regexr.com/) | Build + test regex patterns |
+| Grok Debugger | [grokdebugger.com](https://grokdebugger.com/) | Test Grok patterns |
+| Elastic Grok Docs | [elastic.co/grok](https://www.elastic.co/guide/en/logstash/current/plugins-filters-grok.html) | Official reference |
+
+---
+
+### Common Security Regex Patterns
+
+```regex
+# IPv4 address
+\b([0-9]{1,3}\.){3}[0-9]{1,3}\b
+
+# IPv6 address
+([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}
+
+# Email address
+[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}
+
+# URL
+https?://[^\s"']+
+
+# MD5 hash
+\b[a-fA-F0-9]{32}\b
+
+# SHA256 hash
+\b[a-fA-F0-9]{64}\b
+
+# HTTP status codes (errors only)
+" [45][0-9]{2} 
+
+# SQL injection indicators
+('|--|UNION|SELECT|DROP|SLEEP\(|WAITFOR)
+
+# Base64 encoded string
+[A-Za-z0-9+/]{20,}={0,2}
+```
