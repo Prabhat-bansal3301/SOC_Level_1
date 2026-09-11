@@ -669,3 +669,186 @@ https?://[^\s"']+
 # Base64 encoded string
 [A-Za-z0-9+/]{20,}={0,2}
 ```
+
+---
+
+## CyberChef for Log Analysis
+
+### What is CyberChef?
+Created by GCHQ — "Cyber Swiss Army Knife" with 300+ operations.
+Combine operations into **recipes** to process and analyze data.
+
+🔗 Online: https://gchq.github.io/CyberChef/
+
+---
+
+### Interface Layout
+
+| Section | Purpose |
+|---------|---------|
+| **Operations** | Browse/search 300+ available operations |
+| **Recipe** | Chain of operations applied to input |
+| **Input** | Paste text, upload files, or drag-and-drop |
+| **Output** | Result after all recipe operations applied |
+
+> **Tip:** Use the **Magic** operation if you're unsure what encoding the input uses — CyberChef will guess and suggest relevant operations.
+
+---
+
+### Extracting IPs from Log Files with Regex
+
+**Recipe:**
+```
+Operation: Regular Expression
+Pattern:   \b([0-9]{1,3}\.){3}[0-9]{1,3}\b
+Output format: List matches
+```
+
+**Steps:**
+```
+1. Open CyberChef
+2. Search "Regular Expression" in Operations → drag to Recipe
+3. Enter pattern: \b([0-9]{1,3}\.){3}[0-9]{1,3}\b
+4. Set Output format: "List matches"
+5. Paste log content in Input (or upload file)
+6. Output shows ONLY extracted IP addresses
+```
+
+---
+
+### Uploading Files in CyberChef
+
+```
+Input area → click upload icon (box with arrow)
+→ Select log file (.log, .txt, .zip, .tar.gz, etc.)
+```
+
+**Compressed files:** CyberChef has operations to unzip `.tar.gz` and `.zip` files before processing.
+
+---
+
+### Useful CyberChef Recipes for Log Analysis
+
+#### Extract IPs
+```
+Regular Expression → \b([0-9]{1,3}\.){3}[0-9]{1,3}\b → List matches
+```
+
+#### Decode URL-encoded payloads (SQLi, traversal)
+```
+URL Decode
+```
+
+#### Decode Base64
+```
+From Base64
+```
+
+#### Extract URLs from logs
+```
+Regular Expression → https?://[^\s"']+ → List matches
+```
+
+#### Identify unknown encoding
+```
+Magic (auto-detect)
+```
+
+#### Decode + Analyze obfuscated payload
+```
+URL Decode → From Base64 → Regular Expression
+```
+
+---
+
+### CyberChef vs CLI — When to Use Which
+
+| Scenario | Better Tool |
+|----------|------------|
+| Quick IP extraction from log | CyberChef (visual, no commands) |
+| Real-time log following | CLI (`tail -f`) |
+| Large log file processing | CLI (`grep`, `awk`, `sed`) |
+| Decoding encoded payloads | CyberChef |
+| Automated/scripted analysis | CLI |
+| Multi-step decode chain | CyberChef (recipe) |
+| Unknown encoding identification | CyberChef (Magic) |
+
+---
+
+## Log Analysis Tools – Sigma & YARA
+
+Both are pattern-matching tools written in YAML-style syntax, used to hunt for specific events or indicators in log files, but they serve slightly different purposes.
+
+### Sigma
+Sigma is used to detect events in logs, build SIEM search queries, and identify threats — essentially a standardized, portable way to describe "what to look for" in log data.
+
+**Example rule — detecting failed SSH logins:**
+
+```yaml
+title: Failed SSH Logins
+description: Searches sshd logs for failed SSH login attempts
+status: experimental
+author: CMNatic
+logsource:
+    product: linux
+    service: sshd
+
+detection:
+    selection:
+        type: 'sshd'
+        a0|contains: 'Failed'
+        a1|contains: 'Illegal'
+    condition: selection
+falsepositives:
+    - Users forgetting or mistyping their credentials
+level: medium
+```
+
+| Key | Meaning |
+|---|---|
+| `title` | Short name describing the rule's purpose |
+| `description` | Expands on what the rule does |
+| `status` | Maturity of the rule (e.g. "experimental" = needs more testing) |
+| `author` | Who wrote the rule |
+| `logsource` | Where the relevant logs come from (e.g. Linux sshd logs) |
+| `detection` / `selection` | The actual matching logic — here, entries containing both "Failed" and "Illegal" |
+| `falsepositives` | Known legitimate reasons this might trigger without being malicious (e.g. a user mistyping a password) |
+| `level` | Severity rating of the match |
+
+### YARA
+YARA is also a pattern-matching tool, but it works on **binary and textual patterns** (hex, strings, regex) rather than structured log fields. It's most associated with malware analysis, but works well for log analysis too.
+
+**Example rule — flagging any IPv4 address in a file:**
+
+```yaml
+rule IPFinder {
+    meta:
+        author = "CMNatic"
+    strings:
+        $ip = /([0-9]{1,3}\.){3}[0-9]{1,3}/ wide ascii
+
+    condition:
+        $ip
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `rule` | Names the rule (`IPFinder`) |
+| `meta` | Metadata, e.g. author |
+| `strings` | The actual pattern(s) to search for — here, a regex matching IPv4 addresses |
+| `condition` | What triggers a match — here, simply finding the `$ip` pattern |
+
+**Running it:**
+```bash
+cmnatic@thm:~$ yara ipfinder.yar apache2.txt
+IPFinder apache2
+```
+
+
+**Ways this can be extended:**
+- Match multiple IP addresses at once
+- Match IPs within a specific range (e.g. a subnet or ASN)
+- Match IP addresses written in hex
+- Trigger only if an IP appears more than a set number of times (e.g. alert after 5 occurrences)
+- Combine with other rule logic — e.g. alert only if a specific IP also hits a specific page or performs a specific action
