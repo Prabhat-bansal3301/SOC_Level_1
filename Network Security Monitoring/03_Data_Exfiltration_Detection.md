@@ -153,3 +153,174 @@ Filter by query length:
 
 - Large number of DNS requests with no response
 - Abnormally long DNS query length
+
+---
+
+# FTP Exfiltration
+
+**Core idea:** FTP is old, plaintext by default, and still commonly allowed outbound — attackers abuse legitimate or misconfigured FTP servers to move stolen data, often using compromised or throwaway credentials.
+
+## How Adversaries Use FTP
+
+- Legitimate FTP servers (public or misconfigured internal) used to stage/transfer data
+- Compromised credentials (service accounts, user creds)
+- Non-standard ports or tunneling to blend with other traffic
+
+## Indicators of Attack
+
+- `USER`/`PASS` commands — cleartext credentials, since FTP doesn't encrypt by default
+- `STOR` (upload) / `RETR` (download) — repeated or large transfers
+- Large data connections to unusual external IPs, especially off-hours
+- Data channel on ephemeral ports (PASV mode) paired with large payloads
+
+## Investigating via Wireshark
+
+Target file: `ftp-lab.pcap`
+
+```
+ ftp || ftp-data  | Isolate FTP control + data traffic 
+```
+
+<img width="1005" height="574" alt="ftp" src="https://github.com/user-attachments/assets/57fc577b-f383-4959-a3f6-fb988a23d530" />
+
+```
+ftp.request.command == "USER" || ftp.request.command == "PASS" | Pull login attempts — check for suspicious usernames/weak passwords 
+```
+
+<img width="944" height="524" alt="credentials" src="https://github.com/user-attachments/assets/6abc8ec8-94b9-4d97-90f1-d36a281584bd" />
+
+```
+ftp contains "STOR" | Find upload commands — right-click → **Follow → TCP Stream** to see transferred content 
+```
+<img width="1006" height="534" alt="looking for anomalies" src="https://github.com/user-attachments/assets/c786a523-1f8f-4593-afe2-64ae67416855" />
+
+```
+ftp contains "csv" | Narrow to filenames with a given extension — spot sensitive file types being moved 
+```
+
+<img width="1838" height="684" alt="ftp contains csv" src="https://github.com/user-attachments/assets/52fa601f-17ca-4fc0-bc3c-f2fb81c4dbad" />
+
+```
+ftp && frame.len > 90 | Find large-payload packets — follow TCP stream to inspect content
+```
+
+<img width="1660" height="673" alt="large payload size" src="https://github.com/user-attachments/assets/d310a004-0c97-44d5-8819-de2cff6f4086" />
+
+
+## Findings (This Case)
+
+- A **Guest account** connected from a suspicious source
+- Transferred sensitive CSV files
+- Destination: a suspicious external IP
+
+## Why Cleartext Credentials Matter Here
+
+- `USER`/`PASS` commands appear in plaintext in the pcap — no decryption needed
+- Anyone who captures this traffic (or a SOC analyst reviewing it after the fact) can read the exact login used
+- This is also why an attacker using a **Guest** account is a red flag on its own — weak/default accounts are the easiest FTP foothold to abuse
+  
+---
+
+# HTTP Exfiltration
+
+**Core idea:** HTTP blends exfiltration into normal web traffic — traverses firewalls/proxies easily and is easy to obfuscate (encoding, encryption, tunneling). Detection means separating the exfil noise from legitimate web usage, not spotting an obviously malicious protocol.
+
+## How Adversaries Use HTTP
+
+- **POST uploads** — bulk data sent to attacker-controlled hosts/cloud storage in request bodies
+- **GET with encoded data** — small chunks in query strings/paths, good for low-and-slow exfil
+- **Common services/CDN abuse** — disguised as uploads to popular services or subdomains under reputable domains
+- **Custom headers** — data hidden in headers (e.g. `X-Data: <base64>`) to bypass string-based DLP
+- **Chunked/multipart transfer** — large payloads split into multiple requests to dodge size thresholds
+- **HTTPS/TLS tunneling** — encryption hides the payload; needs TLS inspection, SNI analysis, or metadata-based detection
+- **Staging via cloud services** — upload to Dropbox/GitHub/Gist, fetch externally later
+
+Attackers adapt: low-and-slow, encoding/encryption, legitimate-service abuse — all aimed at evading simple detection rules.
+
+## Indicators of Attack
+
+- Unusually large POST requests to external/unexpected hosts
+- Requests to low-reputation or rarely-seen domains
+- Frequent small requests (beaconing) followed by a large upload
+- Chunked/multipart transfers composing a larger file across multiple requests
+
+## Investigating via Splunk
+
+Base query (set time range to **All Time**):
+
+    index="data_exfil" sourcetype="http_logs"
+
+Narrow to POST requests:
+
+    index="data_exfil" sourcetype="http_logs" method=POST
+
+<img width="1903" height="640" alt="post request" src="https://github.com/user-attachments/assets/e54fb68f-772d-44bf-bae7-71cfc8697d00" />
+
+
+Check average/max/min bytes sent per domain:
+
+    index="data_exfil" sourcetype="http_logs" method=POST
+    | stats count avg(bytes_sent) max(bytes_sent) min(bytes_sent) by domain
+    | sort - count
+
+<img width="1899" height="603" alt="average" src="https://github.com/user-attachments/assets/99113cc6-7b78-45d4-8484-4976c0a0ef56" />
+
+Isolate large POSTs:
+
+    index="data_exfil" sourcetype="http_logs" method=POST bytes_sent > 600
+    | table _time src_ip uri domain dst_ip bytes_sent
+    | sort - bytes_sent
+
+<img width="1905" height="311" alt="isolate payload" src="https://github.com/user-attachments/assets/5ff74983-4166-4fbf-8b7b-147b10d2010e" />
+
+- Surfaces one suspicious entry: a large data chunk uploaded to an external destination
+
+## Investigating via Wireshark
+
+Target file: `http_lab.pcap`
+
+| Filter | Purpose |
+|---|---|
+| `http` | All HTTP traffic |
+| `http.request.method == "POST"` | Isolate POST requests |
+| `http.request.method == "POST" and frame.len > 500` | Filter by size — still noisy |
+| `http.request.method == "POST" and frame.len > 750` | Tighten threshold to cut remaining noise |
+
+- Iterative size-threshold tightening is the actual technique here — start broad, raise the bar until only genuine outliers remain
+- This mirrors the Splunk `bytes_sent > 600` filter — same logic, two tools
+
+---
+
+# ICMP Exfiltration
+
+**Core idea:** ICMP is a diagnostics/control protocol (ping, TTL exceeded) — commonly allowed through firewalls and inspected less strictly than TCP/UDP. Attackers exploit this trust gap by encoding stolen data into ICMP payloads instead of TCP/UDP traffic that gets more scrutiny.
+
+## How Adversaries Use ICMP
+
+- **Echo tunneling (type 8 request / type 0 reply)** — encoded (base64/hex) file chunks placed in ICMP payloads, collected/decoded by a remote listener
+- **Custom types/codes** — uncommon ICMP types or non-zero codes to dodge signature-based detection
+- **Fragmentation** — large payloads split across multiple packets
+- **Encryption/obfuscation** — base64 or encryption to disguise payload as random data
+
+## Indicators of Attack
+
+- Persistent ICMP sessions to an external host with no legitimate monitoring reason
+- Unusually large ICMP payloads (bigger than typical ping size)
+- High-entropy payload data or base64/hex-like patterns
+- ICMP bursts with no other legitimate app traffic from the same host
+- Unusual ICMP type/code (e.g. timestamp types 13/14, custom codes)
+- Regular timing (periodicity) — evenly spaced packets, similar payload sizes
+- Multiple fragments from the same src/dst pair needing reassembly
+
+## Investigating via Wireshark
+
+Target file: `icmp_lab.pcap`
+
+| Filter | Purpose |
+|---|---|
+| `icmp` | All ICMP traffic |
+| `icmp.type == 8` | Isolate Echo Requests |
+| `icmp.type == 8 and frame.len > 100` | Flag oversized pings |
+
+- Normal ping ≈ 74 bytes total
+- Anything over 100 bytes is suspicious — a real ping doesn't need that much payload, so the excess is very likely smuggled data
