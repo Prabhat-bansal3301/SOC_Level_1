@@ -336,3 +336,154 @@ Hosts and manages Windows services. Heavily targeted for masquerading because ma
 - Always read the name character by character
 - Suspicious instance: check its `ServiceDLL` in the registry, since the malicious part may be the DLL and not the process
 - Sysmon Event ID 7 (image loaded) can help spot unexpected DLLs loaded into it
+
+---
+
+# lsass.exe (Local Security Authority Subsystem Service)
+
+Enforces the system's security policy. It is a prime credential-theft target, so it gets extra attention.
+
+## What It Does
+
+- Verifies users logging on to a Windows computer or server
+- Handles password changes
+- Creates access tokens
+- Writes to the Windows Security Log
+- Creates security tokens for SAM (Security Account Manager), AD (Active Directory), and NETLOGON
+- Uses authentication packages specified in:
+
+        HKLM\System\CurrentControlSet\Control\Lsa
+
+## How Attackers Abuse It
+
+- **Credential dumping:** tools like Mimikatz read credentials from LSASS memory
+- **Masquerading:** malware named `lsass.exe`, or slightly misspelled (e.g. `lsas.exe`, `isass.exe`)
+- Extra reading: [LSASS abuse and Credential Guard](https://yungchou.wordpress.com/2016/03/14/an-introduction-of-windows-10-credential-guard/)
+
+## Normal Baseline
+
+| Attribute | Value |
+|---|---|
+| Image Path | `%SystemRoot%\System32\lsass.exe` |
+| Parent Process | `wininit.exe` |
+| Instances | One |
+| User Account | Local System |
+| Start Time | Within seconds of boot |
+
+## Red Flags
+
+- Parent process other than `wininit.exe`
+- Image path outside `C:\Windows\System32`
+- Subtle misspellings of the name
+- More than one instance
+- Not running as SYSTEM
+
+## Detection Tips
+
+- Two separate threats: a fake `lsass.exe` (check the baseline above), and a real `lsass.exe` being accessed by something else (Sysmon Event ID 10)
+- The Mimikatz hunt in the Sysmon notes covers the second case
+- Credential Guard (`lsaiso.exe`) moves secrets out of LSASS memory, which blunts dumping tools
+
+---
+
+# winlogon.exe (Windows Logon)
+
+Handles user logon and session security in Session 1, the user session. Its registry values are a known persistence spot.
+
+## What It Does
+
+- Handles the Secure Attention Sequence (SAS), the `Ctrl+Alt+Delete` key combination used to enter credentials
+- Loads the user profile: `NTUSER.DAT` into `HKCU`
+- `userinit.exe` then loads the user's shell
+- Locks the screen and runs the screensaver
+- Started by `smss.exe` along with a copy of `csrss.exe` in Session 1
+- Reference: [Winlogon](https://en.wikipedia.org/wiki/Winlogon)
+
+## Normal Baseline
+
+| Attribute | Value |
+|---|---|
+| Image Path | `%SystemRoot%\System32\winlogon.exe` |
+| Parent Process | None visible (created by an `smss.exe` instance that exits) |
+| Instances | One or more |
+| User Account | Local System |
+| Start Time | Within seconds of boot for the first instance (Session 1) |
+
+- Extra instances appear when new sessions are created, typically via Remote Desktop or Fast User Switching
+
+## Red Flags
+
+- A real, living parent process (`smss.exe` should already be gone)
+- Image path outside `C:\Windows\System32`
+- Subtle misspellings of the name
+- Not running as SYSTEM
+- Shell value in the registry other than `explorer.exe`
+
+## Detection Tips
+
+- More than one instance is normal here, unlike `wininit.exe`. Check whether each one maps to a real session
+- Shell value location (from general Windows knowledge, not this lesson):
+
+        HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+
+- Check the `Shell` and `Userinit` values there. A changed value means malware launches at every logon
+- Sysmon Event IDs 12/13/14 (registry events) can alert on changes to this key
+
+---
+
+# explorer.exe (Windows Explorer)
+
+Gives the user access to folders and files, and powers the Start Menu and Taskbar. It is the main user-facing shell, so many child processes spawn from it.
+
+## What It Does
+
+- File and folder access
+- Start Menu and Taskbar functionality
+- Launched via `winlogon.exe` → `userinit.exe`, which starts whatever the `Shell` registry value points to:
+
+        HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Shell
+
+- `userinit.exe` exits after spawning `explorer.exe`, so no parent is visible
+- Parent of many child processes (user-launched apps)
+
+## Normal Baseline
+
+| Attribute | Value |
+|---|---|
+| Image Path | `%SystemRoot%\explorer.exe` |
+| Parent Process | None visible (created by `userinit.exe`, which exits) |
+| Instances | One or more per interactively logged-in user |
+| User Account | The logged-in user(s) |
+| Start Time | When the first interactive logon session begins |
+
+- Note the path: `C:\Windows\explorer.exe`, **not** `System32` like the other core processes
+
+## Red Flags
+
+- A real, living parent process (`userinit.exe` should already be gone)
+- Image path outside `C:\Windows`
+- Running as an unknown user
+- Subtle misspellings of the name
+- Outbound TCP/IP connections
+
+## Detection Tips
+
+- Outbound network connections from `explorer.exe` are unusual, since it's a file/UI shell and not a network client. This often means injected code, so check Sysmon Event IDs 3 (network) and 8 (remote thread)
+- Many children is normal, so judge the children individually
+- A hijacked `Shell` value is a persistence trick; it points to a malicious binary and not `explorer.exe`
+
+## Core Windows Process Quick Reference
+
+Summary of the series so far:
+
+| Process | Parent | Instances | User |
+|---|---|---|---|
+| `System` | System Idle (0) | One | SYSTEM |
+| `smss.exe` | System (4) | One master + short-lived children | SYSTEM |
+| `csrss.exe` | None visible (smss exits) | Two or more | SYSTEM |
+| `wininit.exe` | None visible (smss exits) | One | SYSTEM |
+| `services.exe` | `wininit.exe` | One | SYSTEM |
+| `svchost.exe` | `services.exe` | Many | Varies |
+| `lsass.exe` | `wininit.exe` | One | SYSTEM |
+| `winlogon.exe` | None visible (smss exits) | One or more | SYSTEM |
+| `explorer.exe` | None visible (userinit exits) | One or more per user | Logged-in user |
