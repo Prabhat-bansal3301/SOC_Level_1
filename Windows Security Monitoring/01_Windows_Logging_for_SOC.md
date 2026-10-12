@@ -246,3 +246,53 @@ Authentication logs show who got breached; process monitoring shows how, since a
 
 ---
 
+# Sysmon Events Beyond Process Creation: 11, 13, 3, 22
+
+Event ID 1 gives process context; these four events show what the process did next: files dropped, registry changed, network contacted.
+
+## Event IDs
+
+| Event ID | Name | Security log alternative | Purpose |
+|---|---|---|---|
+| 11 | File Create | 4656 (file changes), disabled by default | Files dropped by malware |
+| 13 | Registry Value Set | 4657 (registry changes), disabled by default | Registry changes, e.g. persistence |
+| 3 | Network Connection | None direct; needs firewall config | Traffic from untrusted processes or to malicious destinations |
+| 22 | DNS Query | None direct; needs DNS config | Lookups of suspicious domains |
+
+- Sysmon is configurable: you choose what to log and skip
+- Config used here: Florian's (a popular community config), but you can change it
+
+## Event Structure
+
+- All Sysmon events share the same process-related fields
+- Critical fields like **Logon ID** and **parent process info** are missing from these events
+- Fix: take the `ProcessId`, find the matching Event ID 1, and get the full context there
+
+## Workflow: Analyse Process Activities
+
+1. Copy `ProcessId` from the Event ID 1
+2. Search other Sysmon events with the same `ProcessId`
+3. Network red flags (Events 3 / 22):
+   - Connection to external IPs on port 80 or non-standard ports like `4444`
+   - Connection to known malicious IPs (check VirusTotal)
+   - DNS queries to suspicious domains (`*.top`, `*.click`, or random-looking like `hpdaykfpadvsl.com`)
+4. File and registry red flags (Events 11 / 13):
+   - Files dropped in staging directories like `C:\Temp` or `C:\Users\Public`
+   - Dropped file is a script (`.bat`, `.ps1`) or executable (`.exe`, `.com`)
+   - Files or registry keys used for persistence
+
+## Why These Events Matter
+
+- Network logs show where data was exfiltrated to
+- Registry logs show which system configuration the attacker changed
+- Together with Event ID 1 they let you rebuild the full attack chain
+
+## Detection Tips
+
+- Port `4444` shows up again, same Metasploit default flagged in the Sysmon hunting and perimeter notes
+- The persistence registry keys (`Run` keys) from the Sysmon persistence note are exactly what Event ID 13 catches
+- Random-looking domains often mean DGA (domain generation algorithm) malware, a general-knowledge note, not in the lesson
+- Pivot key is `ProcessId` here, versus `Logon ID` in the Security log notes; use both
+- Splunk starting point (field names may differ in your data):
+
+        index=windowslogs ProcessId=<id> EventID IN (3, 11, 13, 22) | table _time EventID Image TargetFilename DestinationIp QueryName
