@@ -183,3 +183,128 @@ Verify by right-clicking the LNK → Properties → **Shortcut** tab → Target 
 - Splunk starting point (field names may differ in your data):
 
         index=windowslogs EventID=1 Image="*\\powershell.exe" ParentImage="*\\explorer.exe" | table _time CommandLine ParentImage User
+
+---
+
+# Detecting Malicious Downloads (Sysmon)
+
+If you know how the victim sees the attack, each stage of a phishing download leaves a Sysmon event you can hunt.
+
+## Attack Flow
+
+1. User opens a phishing attachment in a browser or desktop app
+2. Simplest case: a direct `.exe` download
+3. More likely: an archive (`.zip`, `.rar`) containing the malware
+
+## Sysmon Chain: Double-Extension Attachment
+
+| Step | Event ID | What happens | Key fields |
+|---|---|---|---|
+| 1 | 1 | Browser launched | `Image: ...\msedge.exe`, `ParentImage: ...\Explorer.EXE` |
+| 2 | 11 | Archive appears in Downloads | `Image: msedge.exe`, `TargetFilename: ...\Downloads\invoice.zip*` |
+| 3 | 11 | (Optional) user extracts files | `Image: Explorer.EXE` or `7zG.exe`, `TargetFilename: ...\invoice.pdf.exe` |
+| 4 | 1 | User double-clicks the extracted file | `Image: ...\Downloads\invoice.pdf.exe`, `ParentImage: Explorer.EXE` |
+
+- Step 3 is optional because Windows can open files straight from inside a ZIP
+- The `*` after `invoice.zip` is a wildcard in the source; browsers also create temporary download files (general knowledge)
+- Final tell: an `.exe` running from `Downloads` with a double extension, launched by Explorer
+
+## LNK Attachments
+
+LNK files leave very little execution trace.
+
+- User runs a fake "Chrome" shortcut that actually runs a PowerShell payload
+- Explorer reads the LNK "Target" field and starts the payload
+- In the logs it looks like `explorer.exe` launched `powershell.exe` directly
+- The LNK itself never shows up as a process
+
+### How to Confirm LNK Phishing
+
+- Look for the preceding Event ID 11: a `.lnk` file created in `Downloads`
+- LNK files must have landed somewhere first, usually through the browser or an archive tool
+- A `.lnk` in `Downloads` + `explorer.exe` → `powershell.exe` = likely LNK phishing
+
+## Binary vs LNK
+
+| | Binary attachment | LNK attachment |
+|---|---|---|
+| Process in Event ID 1 | The malware itself | `powershell.exe` or similar, parent `explorer.exe` |
+| Execution trace | Clear: malicious file is the `Image` | Minimal: LNK never appears as a process |
+| Where to pivot | The `Image` path and name | The earlier `.lnk` file-create event (Event 11) |
+
+## Detection Tips
+
+- Work backwards from the malicious process: Event 1 → find the Event 11 that created the file → find which process created it
+- Red flags for the file-create event:
+  - Created by a browser or archive tool
+  - In `Downloads`, `Temp`, or `ProgramData`
+  - Double extension, or `.lnk`/`.scr`/`.com`
+- Same method as the phishing note: process, file drop, then network, linked by `ProcessId` and Logon ID
+- General knowledge, not in the lesson: Windows marks downloaded files with a Mark of the Web stream (`Zone.Identifier`), which Sysmon Event ID 15 can log
+- Splunk starting points (field names may differ in your data):
+
+        index=windowslogs EventID=11 TargetFilename IN ("*\\Downloads\\*.lnk", "*.pdf.exe", "*.png.com") | table _time Image TargetFilename
+
+        index=windowslogs EventID=1 ParentImage="*\\explorer.exe" Image="*\\Downloads\\*" | table _time Image CommandLine User
+
+---
+
+# Initial Access via Removable Media (USB)
+
+Infected USB drives still work: they bypass firewalls like phishing does, can start an attack with no Internet access, and can keep spreading without user interaction.
+
+## Real-World Proof
+
+- [Camaro Dragon](https://research.checkpoint.com/2023/beyond-the-horizon-traveling-the-world-on-camaro-dragons-usb-flash-drives/): infected USB flash drives used for attacks
+- [Raspberry Robin](https://redcanary.com/blog/threat-intelligence/raspberry-robin/): USB-spread malware
+- MITRE technique: T1091 Removable Media (from the Initial Access note)
+
+## Delivery Scenarios
+
+### 1. USB Delivery Case
+
+- Employee receives a package with a hat and a USB labelled "A gift from HR"
+- Plugs it in, a harmless GIF opens, and they thank HR
+- The malware has already spread to the laptop
+- [Real-world case](https://hackread.com/fbi-hackers-mail-malicious-usb-drives-ransomware/)
+
+### 2. Print Service Case
+
+- User hands a USB to a third party (a print shop) to print a document
+- The shop's system already has a worm, which copies itself onto the USB
+- The user brings the USB home and the infection continues on their PC
+- [Real-world story](https://www.malwarebytes.com/blog/news/2025/05/malware-infected-printer-delivered-something-extra-to-windows-users)
+
+## How the User Gets Infected
+
+Advanced auto-run tricks exist, but most cases are the user launching the malware themselves. Common tricks:
+
+| Trick | What the user sees |
+|---|---|
+| Hides all real files and creates `RECOVERY.lnk` | A shortcut that looks like the way to the files |
+| Creates `Photos.exe` with a folder icon | A normal-looking folder |
+| Creates double-extension copies of every file (`photo_2024_1_12.jpg.exe`) | The same photos, with the real extension hidden |
+
+## Detection
+
+- Looks very similar to phishing attachment detection
+- Both rely on the user launching a malicious binary through the GUI (`explorer.exe`), so it's hard to tell how the attack started
+- Best evidence: execution from an external drive, e.g. `E:\malware.exe`
+
+| Phishing | USB |
+|---|---|
+| Process runs from `Downloads` | Process runs from a drive letter like `E:\` |
+| File-create event by browser or archive tool | No download: the file was already on the drive |
+| Parent `explorer.exe` | Parent `explorer.exe` |
+
+## Detection Tips
+
+- Sysmon Event ID 1: `Image` path starting with a drive letter other than `C:` (the removable drive)
+- Sysmon Event ID 1: `ParentImage` is `explorer.exe`
+- Look for `.lnk` launching `cmd.exe` or `powershell.exe` from the external drive
+- Double extensions (`.jpg.exe`) and folder-icon executables are red flags
+- General knowledge, not in the lesson: Event ID 6416 (Security) logs new external devices, but it must be enabled first
+- Same chain logic as the phishing notes: launch, then file drops, then network, linked by `ProcessId` and Logon ID
+- Splunk starting point (field names may differ in your data):
+
+        index=windowslogs EventID=1 NOT Image="C:\\*" | table _time Image CommandLine ParentImage User
