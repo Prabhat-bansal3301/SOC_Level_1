@@ -151,3 +151,90 @@ All three events share the same subject and **Logon ID `0x2C7896`**, meaning one
 - Splunk starting point (field names may differ in your data):
 
         index=windowslogs EventID IN (4720, 4732, 4724) | table _time EventID SubjectUserName SubjectLogonId TargetUserName
+
+# Malware Persistence: Services and Scheduled Tasks
+
+Backdoored users only work when the attacker can log in remotely. After phishing or USB infections, the malware itself must keep running and reconnect to the C2 after a reboot. Hundreds of Windows persistence methods exist; start with the two most common.
+
+## Methods Compared
+
+| Method | Attack example | Logging |
+|---|---|---|
+| Windows Service (runs after startup) | `sc create "BadService" binpath= "C:\malware.exe" start= auto` | `sc.exe` launch: Sysmon 1; service creation: Security 4697 |
+| Scheduled Task (runs after startup) | `schtasks /create /tn "BadTask" /tr "C:\malware.exe" /sc onstart /ru System` | `schtasks.exe` launch: Sysmon 1; task creation: Security 4698 |
+
+- The space after `binpath=` and `start=` is required by `sc.exe` syntax
+
+## Detecting Malicious Services
+
+- View with `services.msc` or by searching "Services"
+- Creating or modifying one needs admin rights and `sc.exe`
+- Attackers use this often ([MITRE examples](https://attack.mitre.org/techniques/T1543/003/), general knowledge link)
+
+Three detection options:
+
+1. Sysmon Event ID 1: the `sc.exe create` command
+2. Security Event ID `4697` or System Event ID `7045`: service creation
+3. Suspicious process with a `services.exe` parent
+
+### Screenshot: Security Event 4697
+
+| Field | Value |
+|---|---|
+| Subject | `THM-PC\user`, Logon ID `0x35A11` |
+| Service Name | `BadService` |
+| Service File Name | `C:\malware.exe` |
+| Service Type | `0x10` |
+| Service Start Type | `2` (auto start) |
+| Service Account | `LocalSystem` |
+
+- Process tree: `services.exe` → `svchost.exe` (only in some cases) → `C:\malware.exe`
+- It appears in the Services window as `BadService`
+- Red flags: file name outside `System32` (here `C:\`), runs as `LocalSystem`, auto start, unfamiliar name
+
+## Detecting Malicious Scheduled Tasks
+
+- Heavily used by Windows and apps (update checks, hourly backups)
+- GUI: `taskschd.msc` or "Task Scheduler"; CLI: `schtasks.exe`
+- Easy to configure and hide, so the **most common** persistence method
+- Real cases: [APT28](https://quointelligence.eu/2020/09/apt28-zebrocy-malware-campaign-nato-theme/#:~:text=Next%2C%20the%20malware%20creates%20a%20new%20scheduled%20task), [APT41](https://cloud.google.com/blog/topics/threat-intelligence/apt41-us-state-governments/#:~:text=APT41%20has%20leveraged%20the%20following%20Windows%20scheduled%20tasks%20for%20persistence)
+
+Three detection options:
+
+1. Sysmon Event ID 1: the `schtasks.exe /create` command
+2. Security Event ID `4698`: task creation
+3. Suspicious process with a `svchost.exe [...] -s Schedule` parent
+
+### Screenshot: Security Event 4698
+
+| Field | Value |
+|---|---|
+| Subject | `THM-PC\user`, Logon ID `0x35A11` |
+| Task Name | `\BadTask` |
+| Command | `C:\malware.exe` |
+
+- Process tree: `services.exe` → `svchost.exe -k netsvcs -p -s Schedule` → `C:\malware.exe`
+- In Task Scheduler it shows as `BadTask`, trigger "At system startup"
+- Hiding in plain sight: legitimate tasks sit right beside it (`npcapwatchdog`, Microsoft Edge tasks)
+
+## Services vs Tasks
+
+| | Service | Scheduled Task |
+|---|---|---|
+| Create command | `sc create` | `schtasks /create` |
+| Security event | 4697 (also System 7045) | 4698 |
+| Parent of malware | `services.exe` | `svchost.exe -s Schedule` |
+| Management tool | `services.msc` | `taskschd.msc` |
+| Popularity with attackers | Common | Most common |
+
+## Detection Tips
+
+- Both screenshots share Logon ID `0x35A11`: pivot to the 4624 logon for source IP, then trace the session
+- Judge the **binary path**: anything in `C:\`, `Temp`, `ProgramData`, `Users\Public` is suspicious
+- Judge the **parent**: a service or task that launches a user-writable binary is the strongest signal
+- Same method as the core Windows process notes: `svchost.exe` should have `services.exe` as parent, so a child of it deserves a look at the command line
+- Splunk starting points (field names may differ in your data):
+
+        index=windowslogs EventID=1 (Image="*\\sc.exe" CommandLine="*create*") OR (Image="*\\schtasks.exe" CommandLine="*/create*") | table _time Image CommandLine ParentImage User
+
+        index=windowslogs EventID IN (4697, 4698) | table _time EventID SubjectUserName SubjectLogonId
