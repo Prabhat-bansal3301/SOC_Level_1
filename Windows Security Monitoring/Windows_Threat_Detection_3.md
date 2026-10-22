@@ -238,3 +238,145 @@ Three detection options:
         index=windowslogs EventID=1 (Image="*\\sc.exe" CommandLine="*create*") OR (Image="*\\schtasks.exe" CommandLine="*/create*") | table _time Image CommandLine ParentImage User
 
         index=windowslogs EventID IN (4697, 4698) | table _time EventID SubjectUserName SubjectLogonId
+
+---
+
+# Per-User Persistence: Startup Folder and Run Keys
+
+Services and scheduled tasks run at boot and need admin rights. Startup folder and Run keys run only when a specific user logs in, and are used by both legitimate tools and malware. Both share one MITRE technique: [T1547.001](https://attack.mitre.org/techniques/T1547/001/).
+
+## Methods Compared
+
+| Method | Attack example | Logging |
+|---|---|---|
+| Startup Folder | `copy C:\malware.exe "%AppData%\Microsoft\Windows\Start Menu\Programs\Startup\malware.exe"` | New startup item: Sysmon Event ID 11 |
+| Run Key | `reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v BadKey /t REG_SZ /d "C:\malware.exe"` | New registry value: Sysmon Event ID 13 |
+
+## Startup Folder
+
+- Meant as an easy way for inexperienced users to run a program at login: drop the program or shortcut in the folder
+- Paths:
+
+        C:\Users\<USER>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\
+        C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp      (all users)
+
+- Legitimate programs rarely use it, so the folder is usually **empty**; anything in it is worth a look
+- Real malware example: Lumma Stealer (link not in the paste)
+- Detect: Sysmon Event ID 11 (file created) inside the Startup folder
+
+### Screenshot: Sysmon Event 11
+
+| Field | Value |
+|---|---|
+| User | `THM-PC\bob` |
+| ProcessId | `5928` |
+| Image | `C:\Users\bob\Downloads\invoice.pdf.exe` |
+| TargetFilename | `C:\Users\bob\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\malware.exe` |
+
+- The **Image** is the process that dropped the file: a double-extension phishing binary in `Downloads`
+- That makes the chain: phishing attachment → copies itself into Startup
+- Process tree at login: `explorer.exe` → `%AppData%\...\Startup\malware.exe`
+
+## Run Keys
+
+- Same idea as the Startup folder, but the entry is a **registry value** pointing to the program
+
+        HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+        HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run      (all users)
+
+- View with `regedit.exe` or "Registry Editor"
+- Detect: Sysmon Event ID 13 (registry value set) on the Run keys
+
+### Screenshot: Sysmon Event 13
+
+| Field | Value |
+|---|---|
+| User | `THM-PC\bob` |
+| ProcessId | `5932` |
+| Image | `C:\Users\bob\Downloads\invoice.pdf.exe` |
+| TargetObject | `HKU\<SID>\Software\Microsoft\Windows\CurrentVersion\Run\BadRunKey` |
+| Details | `C:\malware.exe` |
+
+- Registry Editor shows `BadRunKey` → `C:\malware.exe` beside legitimate entries (`1Password`, `OpenVPN-GUI`, Microsoft Edge)
+- Note: Sysmon logs the HKCU path as `HKU\<SID>`, so search for that form
+- Process tree at login: `explorer.exe` → `C:\malware.exe`
+
+## Startup Folder vs Run Key
+
+| | Startup Folder | Run Key |
+|---|---|---|
+| What's added | A file | A registry value |
+| Sysmon event | 11 | 13 |
+| Parent at login | `explorer.exe` | `explorer.exe` |
+| Normally | Empty | Has legitimate entries |
+| Hiding spot | Hard: usually empty | Easy: blends with real entries |
+
+## Detection Tips
+
+- Both screenshots show the **same Image** (`invoice.pdf.exe`): the dropper did both, so check what else that process did by `ProcessId`
+- Judge the **path in Details**: `C:\malware.exe`, `Temp`, `ProgramData`, `Users\Public` stand out against `Program Files`
+- `explorer.exe` as parent blends in with normal user activity, so work from the **creation event** back to the dropper
+- User-level persistence runs without admin rights, so it fits phishing infections
+- Same event IDs as the earlier Sysmon persistence note (11, 13), now with real investigation context
+- Splunk starting points (field names may differ in your data):
+
+        index=windowslogs EventID=11 TargetFilename="*\\Start Menu\\Programs\\Startup\\*" | table _time Image TargetFilename User
+
+        index=windowslogs EventID=13 TargetObject="*\\CurrentVersion\\Run\\*" | table _time Image TargetObject Details User
+
+---
+
+# Need for Persistence, Threat Detection Recap, and Ransomware
+
+Attackers stay on a host because the host is worth more over time than as a one-off data grab. Complex attacks like Active Directory compromise and ransomware all start from one simple breach.
+
+## Why Attackers Want Persistence
+
+| Reason | Real example |
+|---|---|
+| Add the host to a botnet for further attacks | Kraken Botnet: crypto miner, data stealer, and C2 in one |
+| Spy on the victim in a state-sponsored campaign | Volt Typhoon: undetected in the US electric grid for nearly a year |
+| Use the victim as an entry point into a network that could take months to breach | A case where attackers spent 29 days breaching a full network |
+
+- Your paste was scrambled here: the bullet list was split in half by the "Threat Detection Recap" text, so I rebuilt it
+- No links came with these examples, so none are included
+
+## Active Directory and Ransomware
+
+- The third reason matters most: a Windows network usually means a large Active Directory
+- AD brings its own attacks, detections, and threats; the main one is **ransomware**
+- Example: McLaren hospitals, 743,000 patients affected
+- Typical sequence: servers encrypted, data stolen, ransom notes printed on every office printer
+- Goal for defenders: stop the attack right after Initial Access, before [Impact](https://attack.mitre.org/tactics/TA0040/)
+
+## Ransom Note (Screenshot: INC Ransom)
+
+<img width="1600" height="1160" alt="Alleged Mclaren ransom note" src="https://github.com/user-attachments/assets/4cdea062-fab6-4665-8a9a-8620e665ff39" />
+
+
+| Note feature | What it tells you |
+|---|---|
+| "Stolen **and** encrypted" | Double extortion: restoring from backup doesn't solve the leak threat |
+| Leak site | Data theft happened earlier; check exfiltration logs |
+| "Business only" tone | Financially motivated, not state-sponsored |
+
+
+| Tactic | Covered (highlighted) | Matching notes |
+|---|---|---|
+| Initial Access | Exploit Public-Facing Application, External Remote Services, Phishing (4/4), Replication Through Removable Media | Exposed RDP, phishing, USB |
+| Execution | Command and Scripting Interpreter (7/7), Scheduled Task/Job (2/2) | PowerShell, LNK payloads |
+| Persistence | Account Manipulation (3/3), Boot or Logon Autostart Execution (10/10), Create Account (2/2), Create or Modify System Process (1/1), External Remote Services, Scheduled Task/Job (2/2) | Backdoored users, services, tasks, Run keys, Startup folder |
+| Credential Access | Brute Force (4/4), Credentials from Password Stores (3/3), Steal Web Session Cookie, Unsecured Credentials (4/4) | RDP brute force, data stealers |
+| Discovery | Account, File and Directory, Network Service, Process, Software (1/1), System Information, System Owner/User | Discovery commands |
+| Collection | Archive Collected Data (3/3), Automated Collection, Browser Session Hijacking, Data from Local System | Collection, stealers |
+| Command and Control | Application Layer Protocol (5/5), Ingress Tool Transfer | C2, tool transfer |
+| Exfiltration | Exfiltration Over C2 Channel, Exfiltration Over Web Service (4/4) | Exfiltration to cloud, Telegram, GitHub |
+| Impact | Data Encrypted for Impact, Financial Theft | Ransomware (next topic) |
+
+
+## Detection Tips
+
+- Ransomware is the end of a chain, not the start: earlier stages (phishing, RDP breach, persistence, exfiltration) are where you catch it
+- Persistence found on a host raises the severity: the attacker planned to stay
+- Check for exfiltration before encryption: the leak-site threat in the note means data likely left first (see the exfiltration notes)
+- Use the matrix as a checklist: for any incident, mark which tactics you have evidence for and which you haven't looked at yet
