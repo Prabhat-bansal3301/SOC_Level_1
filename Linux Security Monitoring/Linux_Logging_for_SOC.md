@@ -316,3 +316,178 @@ More evasion (general knowledge, not in the lesson):
 
         grep ' 403 ' /var/log/nginx/access.log
         awk '{print $1}' /var/log/nginx/access.log | sort | uniq -c | sort -nr | head
+
+---
+
+# Linux Runtime Monitoring and System Calls
+
+By default, Linux logs no process creation, file changes, or network events (collectively **runtime events**), so questions like "Which programs did Bob launch today?" or "Who deleted my home folder?" can't be answered. Windows has the same gap, which is why [Sysmon](https://tryhackme.com/room/windowsloggingforsoc) is added there; Linux needs an extra tool too.
+
+## Runtime Events
+
+| Question | Needs |
+|---|---|
+| Which programs did Bob launch today? | Process creation logs |
+| Who deleted my home folder, and when? | File change logs |
+| What did this host connect to? | Network event logs |
+
+- Existing sources don't cover this: `auth.log` only shows sudo and logins, and Bash history is interactive-only and easy to evade (see previous notes)
+
+## System Calls (Syscalls)
+
+- A system call is how a program asks the OS for a service: open a file, create a process, access the camera
+- Linux has [300+ syscalls](https://man7.org/linux/man-pages/man2/syscalls.2.html)
+- Example: `execve` executes a program
+- The lesson's flowchart image didn't come through; the flow, in general terms: program → system call → kernel → hardware/resource
+
+| Syscall | Runtime event it reveals |
+|---|---|
+| `execve` | A program was launched |
+| `openat` | A file was opened (general knowledge) |
+| `unlink` | A file was deleted (general knowledge) |
+| `connect` | A network connection was started (general knowledge) |
+
+- `execve` is from the lesson; the other three are common syscalls added as general knowledge
+- `execve` is the Linux counterpart of Sysmon Event ID 1; the file and network ones match Event IDs 11 and 3
+
+## Why This Matters for Detection
+
+- All modern EDRs and logging tools monitor syscalls and turn them into readable logs
+- Attackers have almost no way around syscalls, since every action goes through them
+- So the job is: **pick which syscalls to log and monitor**
+
+| | Windows | Linux |
+|---|---|---|
+| Default runtime logging | None | None |
+| Extra tool | Sysmon | `auditd` and similar (general knowledge: covered next in this series) |
+| Process creation | Event ID 1 | `execve` |
+
+## Detection Tips
+
+- The web shell notes already used `auditd` (`ausearch -k web_shell`, `execve` events): it's one tool built on this idea
+- Logging every syscall is far too noisy; a good config logs only high-value ones (`execve`, file changes in sensitive paths, network connects), same "tune your config" lesson as Sysmon
+- Without runtime logging, a Linux investigation is mostly guesswork: confirm it's enabled before an incident, not during
+
+---
+
+# Auditd (Audit Daemon)
+
+Auditd is the built-in Linux auditing tool that SOC teams use for runtime monitoring. It watches system calls and logs process, file, and network events that Linux doesn't log by default.
+
+## Rules
+
+- Rules live in `/etc/audit/rules.d/` and define which system calls to monitor and which filters to apply
+- The lesson's rules screenshot didn't come through. It showed four rules:
+  - One detecting `wget`
+  - Two detecting file operations
+  - One detecting network connections made by `python3`
+- Rule syntax below is from general knowledge, as an illustration of the idea:
+
+        -a always,exit -F arch=b64 -S execve -F exe=/usr/bin/wget -k proc_wget
+        -w /etc/ssh/sshd_config -p wa -k file_sshconf
+
+- `-k` sets the **key**, a tag you search by later (`proc_wget`, `file_sshconf`)
+
+### Balance Matters
+
+- Logging every process, file, and network event produces gigabytes per day
+- More logs don't mean better detection: an attack buried in terabytes of noise is still invisible
+- SOC teams log the highest-risk events only (same tuning lesson as the Sysmon config notes)
+
+## Reading the Logs
+
+- Raw logs: `/var/log/audit/audit.log` (live view)
+- Easier: `ausearch`, which formats output and supports filters
+
+        ausearch -i -k <key>
+
+- `-i` turns numeric IDs into readable names
+- `-k` filters by the rule's key
+
+## Example 1: Process Execution (`proc_wget`)
+
+    ausearch -i -k proc_wget
+
+    type=PROCTITLE ... proctitle=wget https://files.tryhackme.thm/report.zip
+    type=CWD       ... cwd=/root
+    type=EXECVE    ... argc=2 a0=wget a1=https://files.tryhackme.thm/report.zip
+    type=SYSCALL   ... syscall=execve [...] ppid=3752 pid=3888 auid=ubuntu uid=root tty=pts1 exe=/usr/bin/wget key=proc_wget
+
+One command produces **four lines**:
+
+| Line type | Shows |
+|---|---|
+| `PROCTITLE` | The process command line |
+| `CWD` | Current working directory |
+| `EXECVE` | The arguments passed to the program |
+| `SYSCALL` | System call details (below) |
+
+- All four share the same event number (`:2219`), which ties them together as one event
+
+### Key SYSCALL Fields
+
+| Field | Example | Meaning |
+|---|---|---|
+| `pid` / `ppid` | `3888` / `3752` | Process ID and parent ID; build the process tree |
+| `auid` | `ubuntu` | Audit user: the account originally used to log in (keyboard or SSH) |
+| `uid` | `root` | The user who ran the command |
+| `tty` | `pts1` | Session identifier; separates people on the same server |
+| `exe` | `/usr/bin/wget` | Absolute path of the executed binary |
+| `key` | `proc_wget` | Tag from the rule, used to filter |
+
+- `auid` vs `uid`: `auid` stays the **original login** even after `sudo` or `su`, while `uid` changes
+- Here `auid=ubuntu`, `uid=root` means ubuntu logged in and ran `wget` as root
+- That makes `auid` the field that attributes an action to a real person
+- Reading the sample: a root-run download of `report.zip` from an external domain, a Linux ingress tool transfer pattern (see the Windows ingress notes)
+
+## Example 2: File Changes (`file_sshconf`)
+
+    ausearch -i -k file_sshconf
+
+    type=PROCTITLE ... proctitle=nano /etc/ssh/sshd_config
+    type=CWD       ... cwd=/
+    type=PATH      ... item=0 name=/etc/ssh/sshd_config [...]
+    type=SYSCALL   ... syscall=openat [...] ppid=3752 pid=3899 auid=ubuntu uid=root tty=pts1 exe=/usr/bin/nano key=file_sshconf
+
+- Auditd caught `nano` opening `/etc/ssh/sshd_config`
+- New line type: `PATH` shows the file touched
+- Syscall here is `openat` (file), not `execve` (process)
+- Same `ppid=3752` and `tty=pts1` as the `wget` event, so both came from one shell session
+- Opening a file isn't proof of a change; confirm by comparing the file against a known-good copy (general knowledge)
+
+### What SOC Teams Watch
+
+- SSH configuration files
+- Cron job definitions
+- System settings
+- Other critical files and directories
+
+## Auditd Alternatives
+
+Auditd output is verbose, hard to read, and hard to ingest into a SIEM.
+
+| Tool | Best for |
+|---|---|
+| Sysmon for Linux | Teams already using Sysmon and XML configs |
+| Falco | Open source, modern, ideal for containerized systems |
+| Osquery | Broad security use cases |
+| EDR products | Most track Linux runtime events |
+
+- All of them work on the same principle: **monitoring system calls**
+- Learn syscalls once and each tool is easier; it also explains why an action was logged a certain way, or not logged at all
+
+## Detection Tips
+
+- The pivot fields are the same as other notes: `pid`/`ppid` for the process tree (like Sysmon's `ProcessId`), `auid` for the person (like the Windows Logon ID)
+- Rebuild a tree: find the event where `pid` equals your event's `ppid`
+- Red flags in `exe` or `proctitle`: tools run from `/tmp`, `/dev/shm`, or a home folder
+- Red flags in `cwd`: `/tmp`, `/var/tmp`, `/dev/shm`
+- `uid=root` with a different `auid` means someone escalated, so check `auth.log` for the `sudo` line (see the auth.log note)
+- Typical high-value keys to build (general knowledge):
+  - Downloaders: `wget`, `curl`
+  - Persistence: `/etc/crontab`, `/etc/cron.d/`, `~/.ssh/authorized_keys`
+  - Account files: `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`
+  - Network use by scripting tools: `python3`, `nc`
+- Count events per key to see what dominates:
+
+        ausearch -i -k proc_wget | grep -c "type=SYSCALL"
