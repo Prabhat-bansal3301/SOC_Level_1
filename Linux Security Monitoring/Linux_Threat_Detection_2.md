@@ -63,3 +63,104 @@ What each group tells the attacker (general knowledge, not in the lesson):
         ausearch -i -k disc_whoami
         ausearch -i -x whoami
 - Don't stop at one command: run `ausearch -i --ppid <parent_pid> | grep proctitle` to see what else the same parent launched
+
+---
+
+# Specialized Discovery and Detecting Discovery (Linux)
+
+After the first Discovery, attackers run focused commands tied to their goal. Detecting them is easy with auditd; the hard part is deciding who ran them.
+
+## Specialized Discovery
+
+| Objective | Typical commands |
+|---|---|
+| Find and steal credentials and sensitive data | `history \| grep pass`, `find / -name .env`, `find /home -name id_rsa` |
+| Check if the system suits crypto mining | `cat /proc/cpuinfo`, `lscpu \| grep Model`, `free -m`, `top`, `htop` |
+| Scan the internal network for future victims | `ping <ip>`, `for ip in 192.168.1.{1..254}; do nc -w 1 $ip 22 done` |
+
+- Data stealers want passwords and secrets
+- Miners query CPU/GPU to tune mining
+- Botnet scripts scan the network for new victims
+- Some malware combines all three
+- The `nc` loop sweeps one port (22) across a whole subnet, the horizontal scan pattern from the network scanning notes
+- The lesson's loop is missing a `;` before `done` (`... $ip 22; done`), so it won't run as written
+
+## Detecting Discovery: Three Steps (Screenshot)
+
+1. **Log** common Discovery commands (e.g. with auditd)
+2. **Hunt** for Discovery in a SIEM or manually with `ausearch`
+3. **Use the process tree** to find what caused the Discovery
+
+### Step 1: Auditd Rules
+
+Rules in `/etc/audit/rules.d/audit.rules`:
+
+    -a always,exit -S execve -S execveat -F exe=/usr/bin/whoami  -F key=discovery_user
+    -a always,exit -S execve -S execveat -F exe=/usr/bin/id      -F key=discovery_user
+    -a always,exit -S execve -S execveat -F exe=/usr/bin/pwd     -F key=discovery_fs
+    -a always,exit -S execve -S execveat -F exe=/usr/bin/uname   -F key=discovery_os
+    -a always,exit -S execve -S execveat -F exe=/usr/bin/netstat -F key=discovery_network
+
+| Key | Commands grouped |
+|---|---|
+| `discovery_user` | `whoami`, `id` |
+| `discovery_fs` | `pwd` |
+| `discovery_os` | `uname` |
+| `discovery_network` | `netstat` |
+
+- Keys group related commands, so one search covers a whole category
+- `execveat` catches an alternate way of launching programs, not only `execve`
+
+### Step 2: Hunt With ausearch
+
+    ausearch -i -k discovery_user | grep -Ez 'key=|exe='
+
+- Output shows `PROCTITLE`, `CWD`, `EXECVE`, `SYSCALL` lines (see the auditd note)
+- In the screenshot: `whoami` ran with `cwd=/tmp`, as root (`uid=root`)
+- `/tmp` as working directory is a flag: attackers favor it, since it's writable by everyone
+
+## Context Is the Real Challenge
+
+Same command, different meaning:
+
+| Situation | Verdict |
+|---|---|
+| Web server spawns `whoami` | Red flag |
+| IT member runs `find` and `grep` for secrets | Red flag |
+| Monitoring tool pings the local network on a schedule | Expected |
+
+## Step 3: Tracing `whoami` Origin
+
+    ausearch -i -x whoami
+    proctitle=whoami
+    ... ppid=3898 pid=3907 auid=ubuntu uid=ubuntu exe=/usr/bin/whoami
+
+    ausearch -i --pid 3898
+    proctitle=/usr/bin/bash /tmp/lp.sh
+    ... ppid=3840 pid=3898 auid=ubuntu uid=ubuntu exe=/usr/bin/bash
+
+    ausearch -i --ppid 3898
+    [five more commands, like "find /home -name *secret*"]
+
+Tree:
+
+    (PID 3840)
+    └── bash /tmp/lp.sh          (PID 3898)
+        ├── whoami               (PID 3907)
+        └── find /home -name *secret*, and four more
+
+- `whoami` came from a script, `/tmp/lp.sh`, in a world-writable folder
+- Its other children (`find /home -name *secret*` and more) show it hunting for secrets
+- Verdict: the script is malicious
+- `auid=ubuntu`: it ran inside a real login session (unlike the earlier web app case with `auid=unset`), so the `ubuntu` account was used, whether by the owner or an attacker with stolen access
+- Next: find how `lp.sh` got there and how the session started (`auth.log`, SSH logs)
+
+## Detection Tips
+
+- Judge by parent: script in `/tmp`, `/dev/shm`, or a home folder is suspicious
+- Burst of several discovery commands within seconds from one parent means a script or automation
+- Process tree walk: `ausearch -i --pid <ppid>` upward, `ausearch -i --ppid <pid>` downward (see the process tree note)
+- Windows parallel: the same discovery burst and parent check from the Windows Discovery notes
+- Splunk starting point (field names may differ in your data):
+
+        index=linux key IN (discovery_user, discovery_fs, discovery_os, discovery_network) | stats count by exe, ppid, auid | sort - count
