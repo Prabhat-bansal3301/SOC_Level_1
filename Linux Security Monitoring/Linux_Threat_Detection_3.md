@@ -418,3 +418,44 @@ Cron and systemd keep malware alive after a reboot. Account persistence keeps **
 - Use the pivot fields from earlier notes: `ppid` to find the shell, then `auth.log` for the login behind it
 - Application persistence: compare web files against a clean copy, check for recently modified files in web roots, and review admin accounts and plugins
 - Windows parallel: the Windows backdoored-user note (4720, 4732, 4724) and the web shell notes
+
+# Linux as an Entry Point
+
+A single compromised Linux server can open the door to a whole corporate network, even if 99% of the infrastructure is Windows. Linux machines usually run firewalls, web servers, mail servers, and other public-facing services, so they are often the first thing attackers reach. Final stage: [Impact](https://attack.mitre.org/tactics/TA0040/).
+
+## Linux in Espionage
+
+- Linux machines store sensitive data and run mission-critical networks, so state-sponsored groups target them
+- Example: Kimsuky APT installed a backdoor on multiple important Linux targets ([Symantec article](https://www.security.com/threat-intelligence/springtail-kimsuky-backdoor-espionage))
+- Persistence used: **systemd service**, the technique from the Linux persistence note
+- Detect: new `.service` files in `/etc/systemd/system/` or `/lib/systemd/system/`
+
+## Linux in Ransomware
+
+- Linux ransomware is [on the rise](https://invenioit.com/security/linux-ransomware-attacks-rise/?srsltid=AfmBOoqCQp_0W_lZxIKX9OoiEmXNjK9ZEXx6S91fwY5bVre1o099D3wp#:~:text=EDR%20in%20Action%20%E2%86%92-,Does%20Ransomware%20Affect%20Linux%3F,-Yes%2C%20ransomware%20can)
+- Hypervisors are a prime target
+
+| Setup | Risk |
+|---|---|
+| Hundreds of Windows VMs on 3 Linux hypervisors | Breach 3 servers, encrypt every VM |
+
+- Real-world breach example: [Varonis article on VMware ESXi ransomware](https://www.varonis.com/blog/vmware-esxi-in-the-line-of-ransomware-fire#ransomware-payload)
+- One host, huge blast radius: hypervisors need strict access control and monitoring
+
+## MITRE ATT&CK Recap (Screenshot)
+
+Yellow = techniques covered in the Linux notes. Counts like `(3/3)` show sub-techniques covered.
+
+<img width="1568" height="578" alt="image" src="https://github.com/user-attachments/assets/52b42dbd-ddbb-49ea-8939-1eca8eec0014" />
+
+
+## Detection Tips
+
+- Use the matrix as a coverage checklist: for each tactic, ask "which log would catch this on Linux?"
+  - Initial Access: `auth.log`, web logs
+  - Execution, Discovery, Privesc: auditd `execve` and process tree
+  - Persistence: auditd file watches on cron, systemd, `authorized_keys`
+  - Lateral Movement and Exfiltration: network logs (the gaps above)
+- Linux hosts are often public-facing, so put runtime logging (auditd) on them first
+- Hypervisors need special attention: restrict who can SSH in, and alert on any new login or bulk shutdown/encrypt activity (general knowledge)
+- Process tree is the one method that works across all the Linux notes: trace the suspicious command to its parent, then decide if the activity is legitimate
