@@ -287,3 +287,139 @@ Steps:
 
 - The run-time example's `(HelloWorld);` only names the function and **doesn't call it**. A call needs `(HelloWorld)();`
 - The `DLLPROC` typedef takes a `LPTSTR` argument, but `HelloWorld()` takes none, so the types don't match. It looks adapted from a Microsoft example that passed a string
+
+---
+
+## Windows Internals – PE (Portable Executable) Format
+
+Executables and applications are a big part of how Windows works at a higher level. The **PE format** defines the information about an executable and how its data is stored. It's the overall structure for executable and object files, made up of **PE** and **COFF** (Common Object File Format) files.
+
+PE data is most visible in the **hex dump** of an executable (the raw bytes shown in hexadecimal). The examples below come from a hex dump of `calc.exe`.
+
+### PE Structure (7 Components)
+
+| # | Component | Purpose |
+|---|---|---|
+| 1 | **DOS Header** | Defines the file type. The `MZ` header marks it as an `.exe` |
+| 2 | **DOS Stub** | Small program that runs first and prints a compatibility message |
+| 3 | **PE File Header** | Holds the signature, image file header and other info headers |
+| 4 | **Image Optional Header** | Misleading name, but an important part of the PE file header |
+| 5 | **Data Dictionaries** | Part of the optional header, pointing to the image data directory structure |
+| 6 | **Section Table** | Defines which sections exist in the image |
+| 7 | **Sections** | Hold the actual contents (code, imports, data) |
+
+### 1. DOS Header
+- Starts with hex `4D 5A`, which is ASCII **"MZ"**
+- Tells the system this is an executable (`.exe`)
+- Same `4D 5A` signature used to spot fake extensions, e.g. an executable disguised as a `.jpg`
+
+```
+00000000  4D 5A 90 00 03 00 00 00 04 00 00 00 FF FF 00 00  MZ..........ÿÿ..
+```
+
+### 2. DOS Stub
+- A tiny program that runs by default at the start of the file
+- Prints **"This program cannot be run in DOS mode."**
+- Doesn't affect functionality for most users. It only matters if someone tries to run the file in old DOS
+
+```
+00000050  69 73 20 70 72 6F 67 72 61 6D 20 63 61 6E 6E 6F  is program canno
+00000060  74 20 62 65 20 72 75 6E 20 69 6E 20 44 4F 53 20  t be run in DOS
+```
+
+### 3. PE File Header
+- Defines the file format and holds the **signature** and image file header
+- The **least human-readable** part of the file
+- Starts right after the DOS stub. Look for hex `50 45 00 00`, which is ASCII **"PE"**
+
+```
+000000E0  00 00 00 00 00 00 00 00 50 45 00 00 64 86 06 00  ........PE..d†..
+```
+
+### 4 & 5. Image Optional Header and Data Dictionaries
+- The **Image Optional Header** has a deceiving name. It is **not optional** and is a key part of the PE file header
+- **Data Dictionaries** sit inside it and point to the image data directory structure
+
+### 6. Section Table
+- Defines the sections available in the image and their info
+- Each section name can be spotted in the hex dump, e.g. `2E 74 65 78 74` = `.text`
+
+```
+000001F0  2E 74 65 78 74 00 00 00 D0 0B 00 00 00 10 00 00  .text...Ð.......
+```
+
+### 7. Sections
+The headers define the format and function of the file. The sections hold the actual **contents and data**.
+
+| Section | Purpose |
+|---|---|
+| `.text` | Executable code and the **entry point** (where execution begins) |
+| `.data` | Initialized data (strings, variables, etc.) |
+| `.rdata` / `.idata` | Imports (Windows API) and DLLs |
+| `.reloc` | Relocation information |
+| `.rsrc` | Application resources (images, icons, etc.) |
+| `.debug` | Debug information |
+
+### Why This Matters for Analysis
+- Knowing the layout helps you read a hex dump and tell where each part of the file starts
+- Odd section names, missing sections or an empty imports section can hint that a file is **packed or obfuscated**
+- `MZ` at the start and `PE` after the stub are quick checks that a file is a genuine Windows executable
+
+---
+
+## Windows Internals – Windows API, User vs Kernel Mode & Memory Interaction
+
+The easiest and most researched way to interact with Windows internals is through **Windows API calls**. The Windows API gives native access to OS functionality. It mainly means the **Win32 API** and, less commonly, the Win64 API.
+
+### Why a Switch Between Modes Is Needed
+Most Windows internals involve hardware and memory. The **Windows kernel** controls all programs and processes and bridges software and hardware. A normal application can't touch the kernel or hardware directly, so it goes through an interface using **processor modes** and access levels.
+
+### User Mode vs Kernel Mode
+
+| User Mode | Kernel Mode |
+|---|---|
+| No direct hardware access | Direct hardware access |
+| Each process gets its own **private virtual address space** | Everything runs in a **single shared virtual address space** |
+| Access only to "owned" memory locations | Access to the **entire physical memory** |
+
+- Apps start in user mode ("userland") and stay there until a **system call** or API call is made
+- That call makes the processor switch to kernel mode. In documentation this point is called the **"Switching Point"**
+- Languages add an extra layer. For example, **C#** runs through the **CLR** (Common Language Runtime) before reaching the Win32 API and making system calls
+
+### Proof of Concept: Injecting a Message Box into Memory
+The demo shows how to interact with process memory by getting a message box to run from memory in a target process. The material says three steps, but four API calls are used:
+
+1. Get a handle to the target process
+2. Allocate memory in it
+3. Write the payload into that memory
+4. Execute it from that memory
+
+| Step | API Call | What It Does |
+|---|---|---|
+| 1 | `OpenProcess` | Gets a **handle** to the target process (PID passed as a command-line argument) |
+| 2 | `VirtualAllocEx` | Allocates a region of memory in the target process big enough for the payload |
+| 3 | `WriteProcessMemory` | Copies the payload into the allocated region |
+| 4 | `CreateRemoteThread` | Starts a thread that runs the payload from that memory |
+
+**Key parameters worth remembering:**
+- `OpenProcess`: `PROCESS_ALL_ACCESS` sets the access rights, and `FALSE` means the handle isn't inherited
+- `VirtualAllocEx`: `MEM_RESERVE | MEM_COMMIT` reserves and commits the pages, and `PAGE_EXECUTE_READWRITE` allows execution plus read/write
+- `CreateRemoteThread`: the start address points to the allocated buffer, and creation flag `0` means it runs immediately
+
+```cpp
+HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, DWORD(atoi(argv[1])));
+
+remoteBuffer = VirtualAllocEx(hProcess, NULL, sizeof payload,
+    (MEM_RESERVE | MEM_COMMIT), PAGE_EXECUTE_READWRITE);
+
+WriteProcessMemory(hProcess, remoteBuffer, payload, sizeof payload, NULL);
+
+remoteThread = CreateRemoteThread(hProcess, NULL, 0,
+    (LPTHREAD_START_ROUTINE)remoteBuffer, NULL, 0, NULL);
+```
+
+### Key Takeaways
+- The Windows API is the bridge between normal programs and the kernel
+- **User mode**: restricted and isolated. **Kernel mode**: full access to hardware and memory
+- The `OpenProcess` → `VirtualAllocEx` → `WriteProcessMemory` → `CreateRemoteThread` sequence is the classic **process injection** pattern. It is also a useful detection signal, because this exact API chain is often watched for by security tools
+- More on this in the Windows API room
