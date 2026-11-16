@@ -155,9 +155,99 @@ Suggested approach:
 
 - Field names may differ in your data; check the fields sidebar first
 
-## Notes to Check Before Publishing
+---
 
-- **Service creation needs admin rights**, so `ted-admin` already had them. A SYSTEM service is more accurately escalation to SYSTEM and persistence than a jump from a normal user
-- **4722 isn't always logged** on creation, since new accounts are usually enabled by default. Search `4720` first (general knowledge)
-- The source's "In that task" refers to the lab; I removed that wording
-- The paste lacks line breaks between sentences in places ("...day by day.In addition..."); the note is rebuilt from the content
+# Linux Logs in a SIEM (Splunk)
+
+For Linux systems in a SIEM, two log sources come first: `auth.log` (authentication and privilege use) and `syslog` (general system events). Together they let you spot a breach, see the privilege jump, and find persistence.
+
+## The Two Sources
+
+| Log | Shows | Useful for |
+|---|---|---|
+| `auth.log` | Logins, sudo usage, and more | Failed logins, unauthorised access, privilege escalation |
+| `syslog` | Service restarts, cron jobs, background processes | Timelines, system behaviour over time, persistence |
+
+## Authentication Logs
+
+### Unusual Logins
+
+Alert: an unusual SSH login to the `ubuntu` user. Search successful and failed attempts:
+
+    index=linux source="auth.log" *ubuntu* process=sshd
+    | search "Accepted password" OR "Failed password"
+
+- Result: **97 events**, with successful logins at the end
+- Reading: failures, then a success = likely **successful brute force**, so escalate to L2
+- Same pattern as the Linux SSH detection note (`Failed password` flood, then `Accepted password`)
+
+### Privilege Escalation
+
+Check whether the attacker reached root:
+
+    index=linux source="auth.log" *su*
+    | sort + _time
+
+- `sort + _time` puts events in chronological order
+- Finding (from the lesson's screenshot): the attacker went from `ubuntu` to the **root** account
+- `auth.log` alone can't show **how** the root access was gained; other logs are needed
+- The wildcard `*su*` also matches words like "session" and "sudo", so expect extra noise
+
+## System Logs
+
+Capture service activity, restarts, and cron. Useful for persistence or privilege escalation attempts.
+
+### Persistence
+
+Following the same attacker (`ubuntu` to `root`), search cron activity for scripting tools:
+
+    index=linux sourcetype=syslog ("CRON" OR "cron")
+    | search ("python" OR "perl" OR "ruby" OR ".sh" OR "bash" OR "nc")
+
+Three events were found:
+
+| Finding | Meaning |
+|---|---|
+| `pnr5433sw.sh` in `/tmp` runs via cron **every 5 minutes** | Persistence, from a world-writable folder |
+| Perl reverse shell to `10.10.101.12:9999` | Attacker callback (see the reverse shell note) |
+
+- The source says "three events" but lists two findings; the third isn't described
+- A random-looking script name in `/tmp` matches the filepath heuristics note
+
+## Related Tools
+
+- `auditd` and `osquery` are common in real environments but not covered here
+- Earlier notes cover auditd
+
+## Attack Chain Recap
+
+| Step | Source | Evidence |
+|---|---|---|
+| 1. Initial access | `auth.log` | Brute force on `ubuntu` over SSH |
+| 2. Privilege escalation | `auth.log` | Switch to `root` |
+| 3. Persistence | `syslog` | Cron job running `/tmp/pnr5433sw.sh`, Perl reverse shell |
+
+## Practice Scenario
+
+Alert: possible persistence through creation of a new **remote-ssh** user on an Ubuntu server. Logs are in `index=task5`.
+
+Suggested approach:
+1. Find user creation in `auth.log`:
+
+        index=task5 ("useradd" OR "usermod" OR "new user" OR "adduser")
+        | sort + _time
+
+2. Note who created it, when, and whether it was added to the `sudo` group (see the auth.log user management note)
+3. Check the creator's earlier logins:
+
+        index=task5 ("Accepted" OR "Failed") process=sshd
+        | table _time _raw
+
+4. Search cron and service activity for follow-up persistence:
+
+        index=task5 sourcetype=syslog ("CRON" OR "cron")
+
+5. Build a timeline: login, privilege change, user creation, persistence
+
+- Field and source names may differ; check the fields sidebar first
+
