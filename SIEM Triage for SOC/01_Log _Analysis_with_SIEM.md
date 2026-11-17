@@ -251,3 +251,93 @@ Suggested approach:
 
 - Field and source names may differ; check the fields sidebar first
 
+---
+
+# Web Logs in a SIEM (Splunk)
+
+Web server logs (Apache, Nginx, others) are an important data source. **Access logs** show requests to website resources, and often contain signs of scanning, DDoS attempts, web attacks, and web shells. **Error logs** help explain failures and other issues.
+
+## Brute Force on a WordPress Login
+
+Alert: possible brute force against the login page.
+
+Approach:
+- Find the login URL (e.g. `/wp-login.php`)
+- Filter for `POST` requests
+- Set a threshold, e.g. `count > 25` in 5 minutes
+- Group by `clientip` to find the source
+- Check `user-agent` for context
+
+Query:
+
+    index=* method=POST uri_path="/wp-login.php"
+    | bin _time span=5m
+    | stats values(referer_domain) as referer_domain values(status) as status values(useragent) as UserAgent values(uri_path) as uri_path count by clientip _time
+    | where count > 25
+    | table referer_domain clientip UserAgent uri_path count status
+
+- Finding: `167.172.41.141` made **160 requests** to `wp-login.php`
+- The User-Agent shows **Hydra**, a popular brute-force tool
+
+| Query part | Purpose |
+|---|---|
+| `bin _time span=5m` | Groups events into 5-minute buckets |
+| `stats ... count by clientip _time` | Counts requests per IP per bucket |
+| `where count > 25` | Keeps only IPs over the threshold |
+
+## Possible Web Shell
+
+Alert: possible web shell activity.
+
+Approach:
+- Search requests to script or executable types: `.php`, `.asp`, `.jsp`, `.exe`
+- Look for `POST` and `GET` with `status=200`
+- Web shells make a few suspicious requests in a short time, so use a threshold like `count > 2`
+- Group by domain; review `clientip` and `user-agent` for fingerprints
+
+Query (as given in the source, see the corrections below):
+
+    index=*
+    | search status=200 AND uri_path IN(*.php, *.phtm, *.asp, *.aspx, *.jsp, *.exe) AND (method=POST AND method=GET)
+    | stats values(status) as status values(useragent) as UserAgent values(method) as method
+      values(uri) as uri values(clientip) as clientip count by referer_domain
+    | where count > 2
+    | table referer_domain count method status clientip UserAgent uri
+
+- Finding: many different URIs, but **`505.php`** stood out as a possible web shell and needs a closer look
+- Matches the web shell notes: repeated `GET`/`POST` to one file
+
+## DDoS
+
+Alert: possible DDoS.
+
+Approach:
+- Look for status **503** (server overloaded)
+- Look for huge request counts in a short time, e.g. more than 100,000 in 10 minutes, per IP
+- Review the targeted domain, User-Agent, and URI path for patterns
+
+Query:
+
+    index=* status=503
+    | bin _time span=10m
+    | stats values(referer_domain) as referer_domain values(status) as status values(useragent) as UserAgent values(uri_path) as uri_path count by clientip _time
+    | where count > 100000
+    | table _time referer_domain clientip UserAgent uri_path count status
+
+- Finding: the resource was unavailable for the last 10 minutes and received **more than 1.5 million requests**, confirming a possible DDoS
+- Same indicators as the earlier DoS log note (high rate, 5xx spike)
+
+## Three Alerts Compared
+
+| Alert | Key filter | Group by | Threshold | Tell |
+|---|---|---|---|---|
+| Brute force | `POST` to `/wp-login.php` | `clientip`, 5 min | `count > 25` | Many attempts, tool User-Agent (Hydra) |
+| Web shell | Script/exe extensions, `status=200` | `referer_domain` | `count > 2` | Odd file name like `505.php` |
+| DDoS | `status=503` | `clientip`, 10 min | `count > 100000` | Huge volume, overloaded server |
+
+## Detection Tips
+
+- Thresholds are starting points: tune them to your site's normal traffic
+- Replace `index=*` with the real web index; searching every index is slow on a production SIEM
+- Pivot on `clientip` across all three alerts: the same IP may appear in several
+- After a web shell hit, check the host for the file (see the web shell file system note)
