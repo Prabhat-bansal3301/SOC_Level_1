@@ -337,3 +337,162 @@ Adversaries use malicious driver files for evasion. Two plugins list them:
 | 3 | Any odd kernel modules? | `modules` |
 | 4 | Any hidden drivers? | `driverscan` |
 
+---
+
+# Memory Forensics with Volatility – Investigating Two Infected Hosts (Banking Trojan and WannaCry)
+
+**Goal:** analyse **memory dumps** from compromised machines to find what malware was running, how it behaved and what traces it left in RAM. Two cases were investigated using **Volatility 3**.
+
+| Case | Memory file | Scenario |
+|---|---|---|
+| **001** | `Investigation-1.vmem` | A banking trojan disguised as an Adobe component, with a suspicious IP linked to it |
+| **002** | `Investigation-2.raw` | Post-incident analysis after a ransomware outbreak: which malware was it and what happened? |
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **Memory dump** | A snapshot of a computer's RAM. It contains running processes, loaded DLLs and network data that may never touch the disk |
+| **`.vmem` / `.raw`** | Memory file formats (`.vmem` is a VMware virtual machine's memory, `.raw` is a raw dump) |
+| **Volatility** | An open-source memory forensics framework. It's used through **plugins**, each of which extracts one kind of information |
+| **PID / PPID** | Process ID, and the ID of its **parent** process |
+| **Process tree** | Which process started which. Unusual parent-child links are a strong malware clue |
+| **Mutex** | A "lock" object a program creates so only one copy of it runs. Malware often uses a fixed mutex name, so that name becomes an **IOC** |
+| **DLL** | A shared code library loaded by a program. The DLLs a process loads show what it can do |
+| **`ws2_32.dll`** | The Windows Sockets library, used to create network connections |
+| **User-agent** | A string a program sends in HTTP requests to identify itself. Malware may hard-code one, which leaves a searchable trace |
+| **Banking trojan** | Malware that steals banking credentials, often by watching for visits to bank websites |
+
+## Volatility 3 Basics
+
+**General format:**
+```
+vol -f <memory file> <plugin>
+```
+
+| Option | Meaning |
+|---|---|
+| `-f <file>` | The memory image to analyse |
+| `-o <dir>` | Output directory (used when dumping files) |
+| `--pid <n>` | Limit a plugin to one process |
+| `--dump` | Write the extracted data to disk |
+| `-h` | Help. `vol -h \| grep windows.` lists all Windows plugins |
+
+### Plugins used in these cases
+
+| Plugin | What it shows |
+|---|---|
+| `windows.info` | OS build version, kernel details and **when the memory was acquired** |
+| `windows.pstree` | Processes in a tree, showing PID, parent PID and parent-child relationships |
+| `windows.memmap.Memmap` | Maps a process's memory. With `--dump` it writes that process's memory to a file |
+| `windows.handles` | Open handles of a process (files, registry keys, **mutexes**) |
+| `windows.filescan` | Scans memory for file objects, to find files that were loaded or open |
+
+### Other useful plugins (beyond this lab)
+
+| Plugin | Use |
+|---|---|
+| `windows.pslist` / `windows.psscan` | Process listings. `psscan` can find **hidden or terminated** processes |
+| `windows.cmdline` | Command-line arguments of each process |
+| `windows.dlllist` | DLLs loaded by each process |
+| `windows.malfind` | Finds suspicious memory regions that may hold injected code |
+| `windows.netscan` | Network connections (support depends on the OS version) |
+
+## Case 001: Banking Trojan Disguised as an Adobe Component
+
+**Starting clue:** a suspicious IP address tied to the file.
+
+| Question | Command | Finding |
+|---|---|---|
+| Host build version | `vol -f Investigation-1.vmem windows.info` | Windows XP build string `2600.xpsp.080413-2111` |
+| When was the memory acquired? | Same output (`windows.info`) | `2012-07-22 02:45:08` |
+| Suspicious process | `vol -f Investigation-1.vmem windows.pstree` | **`reader_sl.exe`**, a non-essential process that mimics an Adobe component |
+| Its parent process | Same `pstree` output | **`explorer.exe`**, PID **1484** |
+| Suspicious PID | Same `pstree` output | **1640** |
+
+**Reading the process tree:**
+- Look for programs that **don't belong** on a normal system, or that run in an odd place in the tree
+- `explorer.exe` as a parent means a **user launched it** (for example by opening a file). That matches a malicious "Adobe document"
+- A legitimate Adobe helper uses a similar name, so the name alone isn't proof. The evidence is what you find inside its memory (below)
+
+### Digging into the suspicious process
+**Dump the process memory, then search it for readable strings:**
+```
+vol -f Investigation-1.vmem -o /tmp windows.memmap.Memmap --pid 1640 --dump
+strings /tmp/pid.1640.dmp | grep -i "user-agent"
+```
+
+| Step | Purpose |
+|---|---|
+| `windows.memmap.Memmap --pid 1640 --dump` | Writes PID 1640's memory to `/tmp/pid.1640.dmp` |
+| `strings` | Pulls readable text out of the binary dump |
+| `grep -i "user-agent"` | Searches case-insensitively for HTTP user-agent strings |
+
+**Findings:**
+- **User-agent used by the adversary:** `Mozilla/5.0 (Windows; U; MSIE 7.0; Windows NT 6.0; en-US)`. It imitates an old Internet Explorer 7, which helps it blend in as ordinary browsing
+- Searching the dump for `chase` returned **many hits**, so **Chase Bank** was one of the bank domains the trojan watched for. This fits a **banking trojan** that targets specific financial sites
+
+**Tip:** `strings | grep` on a process dump is a quick way to find IPs, URLs, domains, user-agents and file paths. Try keywords like `http`, `.exe`, `.dll`, a bank name or the suspicious IP.
+
+## Case 002: WannaCry Ransomware
+
+**Scenario:** the decryption key was already recovered, so the task is post-incident analysis: which malware and what did it do?
+
+| Question | Command | Finding |
+|---|---|---|
+| Suspicious process at PID 740 | `vol -f Investigation-2.raw windows.pstree` | **`@WanaDecryptor@`** |
+| Parent process | Same output | **`tasksche.exe`** |
+| Parent PID | Same output | **1940** |
+| Malware family | From the names above | **WannaCry** |
+| Full path of the binary | Dump PID 740 and search its strings (below) | `C:\Intel\ivecuqmanpnirkt615\@WanaDecryptor@.exe` |
+
+**Finding the full path:**
+```
+vol -f Investigation-2.raw -o /tmp windows.memmap.Memmap --pid 740 --dump
+strings /tmp/pid.740.dmp | grep -i wana
+```
+
+**What the names tell you:**
+- `@WanaDecryptor@.exe` is the WannaCry component that displays the **ransom note** and handles decryption
+- `tasksche.exe` is a name that resembles genuine Windows Task Scheduler components. WannaCry uses it for the process that **launches the decryptor**
+- A random-looking folder under `C:\Intel\` is a typical place malware hides itself
+
+### Malware indicators
+
+| Indicator | Finding | Why it matters |
+|---|---|---|
+| **DLL for sockets** | `ws2_32.dll` | The decryptor can create network connections |
+| **Mutex** | `MsWinZonesCacheCounterMutexA` | A known **WannaCry mutex**. Finding it in a process's handles is a reliable indicator |
+| **Plugin to find files from the malware's folder** | `windows.filescan` | Lists file objects in memory so you can find everything loaded from the working directory |
+
+**Finding the mutex:** use `windows.handles` on the suspicious process (for example `vol -f Investigation-2.raw windows.handles --pid 740`) and look for entries of type **Mutant**, which is how Volatility labels mutexes.
+
+**Finding the right plugin:** `vol -h | grep windows.` lists every Windows plugin. `windows.filescan` stands out as the one for finding files.
+
+## Investigation Workflow (Reusable)
+
+| Step | Action | Plugin or command |
+|---|---|---|
+| 1 | Identify the system and acquisition time | `windows.info` |
+| 2 | Review running processes and relationships | `windows.pstree` |
+| 3 | Pick suspicious processes (odd names, odd parents, wrong location) | Compare against what normal looks like |
+| 4 | Dump the suspicious process's memory | `windows.memmap.Memmap --pid <n> --dump` |
+| 5 | Search the dump for clues | `strings <dump> \| grep -i <keyword>` |
+| 6 | Check handles, DLLs and files | `windows.handles`, `windows.dlllist`, `windows.filescan` |
+| 7 | Match findings to known malware and IOCs | Mutex names, file paths, user-agents, IPs |
+
+## Key Takeaways
+- **Memory shows what disk doesn't.** Running processes, hidden code and network artefacts all live in RAM
+- **Start with `windows.info` and `windows.pstree`.** They give context and the first suspects
+- **Parent-child relationships matter.** A document-themed process started by `explorer.exe`, or a decryptor started by a fake-looking `tasksche.exe`, are strong clues
+- **Don't rely on the name alone.** Malware copies real names, so confirm with strings, handles and paths
+- **Dump a process, then run `strings`.** It's simple and very effective for finding user-agents, domains and file paths
+- **Mutexes are good IOCs.** Many malware families use the same mutex name every time
+- **PID cross-referencing:** once you have a PID, every other plugin can be limited to it with `--pid`
+- **Plugin names are discoverable:** `vol -h | grep windows.` is the fastest way to find the right one
+
+## Further Reading
+- [Volatility Foundation GitHub wiki](https://github.com/volatilityfoundation/volatility/wiki)
+- [SANS memory forensics poster (2015)](https://digital-forensics.sans.org/media/Poster-2015-Memory-Forensics.pdf)
+- [Finding advanced malware using Volatility (eForensics)](https://eforensicsmag.com/finding-advanced-malware-using-volatility/)
+- Book: *The Art of Memory Forensics*
